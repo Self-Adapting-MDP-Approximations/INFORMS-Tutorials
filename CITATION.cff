@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite it using the metadata below."
+title: "INFORMS Tutorials: Self-Adapting MDP Approximations"
+type: software
+license: MIT
+authors:
+  - family-names: Cire
+    given-names: Andre
+    url: "https://utsc.utoronto.ca/mgmt/andre-cire"
+  - family-names: Nadarajah
+    given-names: Selva
+    url: "https://selvan.people.uic.edu/"
+  - family-names: Pakiman
+    given-names: Parshan
+    url: "https://parshanpakiman.github.io/"
+  - family-names: Soheili
+    given-names: Negar
+    url: "https://www.negar-soheili.com/"
+repository-code: "https://github.com/self-adapting-mdp-approximations/informs-tutorials"
+abstract: "An open research tutorial and companion codebase for self-adapting approximation methods for Markov decision processes."
