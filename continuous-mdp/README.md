@@ -573,24 +573,21 @@ This example ties the code back to the COR cycle using the simplest VFA architec
 - **Optimize**: solve the finite sampled ALP with `scipy.optimize.linprog`.
 - **Refine**: convert the fitted VFA into a greedy policy and simulate that policy from the initial state.
 
-The important code parameters are grouped below so the notebook remains readable on narrower screens.
+The important code parameters are:
 
-**Construct parameters**
-
-- **Polynomial basis**: `PolynomialBasis1D(exponents=(0, 1, 2))` uses $\phi(s)=[1,s,s^2]$, so $V_\beta(s)=\phi(s)^\top\beta$.
-- **Demand samples per Bellman expectation** ($L$): `InventoryMDPConfig(num_noise_samples=3000)` stores `3000` demand draws in the MDP. These draws approximate the expectations in `get_batch_next_state(...)` and `get_expected_cost(...)`.
-- **Constraint samples** ($N$): `num_constraints = 3000` draws the state-action pairs $(s_i,a_i)$ used as sampled Bellman constraints.
-- **State-relevance samples** ($M$): `num_state_relevance_samples = 3000` draws the states used to build the empirical objective coefficient `c`. The helper also adds the lower bound, zero, and upper bound as reference states.
-- **Action grid spacing**: `InventoryMDPConfig(action_step=1.0)` defines the discrete order quantities considered by the policy.
-- **Reproducibility seed**: `InventoryMDPConfig(random_seed=12345)` controls the sampled constraints, relevance states, and default demand batch.
-
-**Policy-evaluation parameters**
-
-- **Policy lookup grid**: `state_grid_size = 121` builds the inventory-state grid where greedy actions are precomputed.
-- **Demand samples for one-step lookahead**: `policy_noise_batch_size = 1000` approximates the expectation in the sampled greedy policy decision.
-- **Policy simulation paths**: `num_trajectories = 2000` sets the number of Monte Carlo trajectories used to estimate policy cost.
-- **Simulation horizon**: `horizon = 200` sets the number of periods simulated in each trajectory.
-- **Initial state** ($s_0$): `initial_state = 5.0` is the starting inventory level for the reported policy-cost estimate.
+| Concept | Math symbol | Code name | Value in the example | How it is used |
+| --- | --- | --- | --- | --- |
+| Polynomial basis | $\phi(s)$ | `PolynomialBasis1D(exponents=(0, 1, 2))` | `[1, s, s^2]` | Defines the VFA $V_\beta(s)=\phi(s)^\top\beta$. |
+| Demand samples per Bellman expectation | $L$ | `InventoryMDPConfig(num_noise_samples=3000)` | `3000` | `make_inventory_mdp(...)` stores this fixed demand batch in `mdp.list_demand_obs`; `get_batch_next_state(...)` and `get_expected_cost(...)` use it inside each sampled constraint. |
+| Constraint samples | $N$ | `num_constraints` | `3000` | `sample_constraint_state_actions(num_constraints)` draws the state-action pairs $(s_i,a_i)$ used as sampled Bellman constraints. |
+| State-relevance samples | $M$ | `num_state_relevance_samples` | `3000` random states plus 3 boundary/reference states | `sample_state_relevance_states(...)` builds the empirical objective coefficient `c`. The extra states are the lower bound, zero, and upper bound. |
+| Action grid spacing | none | `InventoryMDPConfig(action_step=1.0)` | `1.0` | Defines the discrete order quantities used when constructing the greedy policy. |
+| Reproducibility seed | none | `InventoryMDPConfig(random_seed=12345)` | `12345` | Controls the sampled constraints, state-relevance states, and default demand batch. |
+| Policy lookup grid | none | `PolicyEvaluationConfig(state_grid_size=121)` | `121` | Builds a grid of inventory states where greedy actions are precomputed. |
+| Demand samples for one-step lookahead | none | `policy_noise_batch_size` | `1000` | Approximates the expectation in the greedy policy decision rule. |
+| Policy simulation paths | none | `num_trajectories` | `2000` | Number of Monte Carlo trajectories used to estimate policy cost. |
+| Simulation horizon | none | `horizon` | `200` | Number of periods simulated in each trajectory. |
+| Initial state | $s_0$ | `initial_state` | `5.0` | Starting inventory level for the reported policy-cost estimate. |
 
 In this example, the basis vector is $\phi(s)=(1,s,s^2)^\top$, so the fitted value function is $V_\beta(s)=\phi(s)^\top\beta=\beta_0+\beta_1s+\beta_2s^2$. The ideal ALP objective averages $V_\beta(s)$ under a state-relevance distribution. In the code, this expectation is replaced by an empirical average over sampled states $\bar s_1,\ldots,\bar s_M$:
 $$
