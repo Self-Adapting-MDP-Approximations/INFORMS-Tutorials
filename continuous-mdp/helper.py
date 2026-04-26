@@ -10,8 +10,6 @@
     GitHub:     https://github.com/self-adapting-mdp-approximations
 -------------------------------------------------------------------------------
 
-Helper functions for the ALP tutorial notebook.
-
 The main goal of this file is pedagogical: keep the notebook readable by
 moving repetitive experiment code into well-named helpers. The helpers now use
 small config objects so a reader can see the key modeling choices in one place
@@ -26,13 +24,13 @@ from types import SimpleNamespace
 import matplotlib.pyplot as plt
 import numpy as np
 
-from PSMD.psmd import PSMD
-from Self_Guided_ALP.cvl_lower_bound import estimate_actual_lower_bound_falp, estimate_actual_lower_bound_sgalp
-from Self_Guided_ALP.falp import FALP
+from psmd.psmd import PSMD
+from self_guided_alp.cvl_lower_bound import estimate_actual_lower_bound_falp, estimate_actual_lower_bound_sgalp
+from self_guided_alp.falp import FALP
 from mdp import make_inventory_mdp
 from policy import build_greedy_policy_lookup as _build_greedy_policy_lookup
 from policy import estimate_upper_bound_fast
-from Self_Guided_ALP.sgalp import SelfGuidedALP
+from self_guided_alp.sgalp import SelfGuidedALP
 from config import (
     FALPConfig,
     LowerBoundConfig,

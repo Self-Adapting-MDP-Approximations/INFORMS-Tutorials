@@ -30,7 +30,7 @@ import numpy as np
 
 from basis import PolynomialBasis1D
 from policy import estimate_upper_bound_fast
-from Self_Guided_ALP.cvl_lower_bound import SimpleLNSLowerBound
+from self_guided_alp.cvl_lower_bound import SimpleLNSLowerBound
 from config import PSMDConfig
 
 

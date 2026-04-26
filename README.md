@@ -44,6 +44,15 @@ Readers can use this repository to:
 
 The repository is intended as a public-facing scholarly resource rather than a classroom platform. It provides a place to study the methods, examine the code, ask questions, and engage with the research community through discussion and future extensions.
 
+## Repository Layout
+
+- `continuous-mdp/`: code and notebooks for continuous state-action MDP examples.
+- `continuous-mdp/self_guided_alp/`: Python package for FALP, SGALP, and lower-bound routines.
+- `continuous-mdp/psmd/`: Python package for the PSMD baseline.
+- `continuous-mdp/notebooks/`: tutorial notebooks for the continuous MDP material.
+- `weakly-coupled-mdp/`: code and notebooks for weakly coupled MDP examples.
+- `weakly-coupled-mdp/notebooks/`: tutorial notebooks for the weakly coupled MDP material.
+
 ## Authors and Maintainers
 
 This repository is maintained by:
