@@ -20,7 +20,7 @@ This part focuses on approximation frameworks for large-scale weakly coupled MDP
 
 - **Applications:** dynamic assortment optimization.
 
-### [General Continuous State-Action Markov Decision Processes](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/tree/main/continuous-mdp)
+### General Continuous State-Action Markov Decision Processes [🔗](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/tree/main/continuous-mdp)
 
 This part focuses on approximate linear programming and adaptive value-function approximation methods for MDPs with continuous state and action spaces.
 
