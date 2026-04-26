@@ -596,10 +596,10 @@ In both cases, the value of self-adaptation is measured relative to the same Lag
 
 A practical reading order is:
 
-1. [how-code-works.ipynb](weakly-coupled-mdp/notebooks/how-code-works.ipynb)
+1. [how-code-works.ipynb]([weakly-coupled-mdp/notebooks/](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/weakly-coupled-mdp/notebooks/)how-code-works.ipynb)
    Learn the files, data structures, basic function calls, and Lagrangian baseline.
-2. [fnr-self-adaptation.ipynb](weakly-coupled-mdp/notebooks/fnr-self-adaptation.ipynb)
+2. [fnr-self-adaptation.ipynb]([weakly-coupled-mdp/notebooks/](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/weakly-coupled-mdp/notebooks/)fnr-self-adaptation.ipynb)
    See how a feasible network represents joint actions and improves the executable policy.
-3. [delayed-allocation-self-adaptation.ipynb](weakly-coupled-mdp/notebooks/delayed-allocation-self-adaptation.ipynb)
+3. [delayed-allocation-self-adaptation.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/weakly-coupled-mdp/notebooks/delayed-allocation-self-adaptation.ipynb)
    See how refinement adds useful joint actions without starting from the full feasible-action representation.
 
