@@ -8,7 +8,7 @@ The goal is to connect theory and computation through readable implementations, 
 
 This repository includes research code and tutorial material for self-adapting approximation methods, organized around two broad classes of Markov decision processes.
 
-### Weakly Coupled Markov Decision Processes
+### [Weakly Coupled Markov Decision Processes](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/tree/main/weakly-coupled-mdp)
 
 This part focuses on approximation frameworks for large-scale weakly coupled MDPs, where many local decision processes interact through shared resource constraints or aggregate coupling constraints.
 
