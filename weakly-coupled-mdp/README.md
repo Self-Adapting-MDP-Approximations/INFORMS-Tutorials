@@ -1,5 +1,5 @@
 ---
-# How This Code Works
+# How The Weakly Coupled MDP Code Works
 ---
 
 This notebook is a guided tour of the weakly coupled MDP tutorial codebase. It is written for readers who want to understand the Python files, the basic function calls, and the baseline Lagrangian relaxation before moving to the self-adapting approximations.
