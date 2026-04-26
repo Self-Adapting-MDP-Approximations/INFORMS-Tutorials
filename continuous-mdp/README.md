@@ -109,6 +109,31 @@ for path in sorted((PROJECT_ROOT / 'notebooks').glob('*.ipynb')):
 
 ```
 
+    Continuous MDP Python modules:
+       config.py
+       helper.py
+       mdp.py
+       policy.py
+    
+    Shared repository Python modules:
+       basis.py
+    
+    self_guided_alp package:
+       self_guided_alp/__init__.py
+       self_guided_alp/cvl_lower_bound.py
+       self_guided_alp/falp.py
+       self_guided_alp/sgalp.py
+    
+    psmd package:
+       psmd/__init__.py
+       psmd/psmd.py
+    
+    Notebooks:
+       notebooks/how-code-works.ipynb
+       notebooks/psmd.ipynb
+       notebooks/self-guided-alp.ipynb
+
+
 #### The roles of the main files are:
 
 | Path | Main role | Why it matters for the continuous MDP tutorial |
@@ -170,6 +195,122 @@ for group_index, (group_name, config_classes) in enumerate(config_groups.items()
 
 ```
 
+    MODEL
+    =====
+    
+    InventoryMDPConfig
+    ------------------
+      mdp_name
+      discount
+      random_seed
+      lower_state_bound
+      upper_state_bound
+      max_order
+      purchase_cost
+      holding_cost
+      backlog_cost
+      disposal_cost
+      lost_sale_cost
+      demand_mean
+      demand_std
+      demand_min
+      demand_max
+      num_noise_samples
+      action_step
+    
+    BASIS AND SOLVER
+    ================
+    
+    RandomFeatureConfig
+    -------------------
+      bandwidth_choices
+      random_seed
+    
+    HiGHSSolverConfig
+    -----------------
+      method
+      primal_feasibility_tolerance
+      dual_feasibility_tolerance
+    
+    GuidingConstraintConfig
+    -----------------------
+      num_guiding_states
+      allowed_violation
+      relax_fraction
+      absolute_floor
+      retry_scales
+    
+    ALGORITHMS
+    ==========
+    
+    FALPConfig
+    ----------
+      num_random_features
+      num_constraints
+      num_state_relevance_samples
+      random_features
+      solver
+    
+    SGALPConfig
+    -----------
+      max_random_features
+      batch_size
+      num_constraints
+      num_state_relevance_samples
+      random_features
+      guiding
+      solver
+    
+    PSMDConfig
+    ----------
+      num_iterations
+      H
+      N
+      eval_interval
+      step_size
+      step_size_power
+      sampler_steps
+      proposal_state_std
+      proposal_action_std
+      sampling_temperature
+      refresh_fraction
+      coefficient_clip
+      random_seed
+      initial_state
+      snapshot_iterations
+      snapshot_sample_size
+      snapshot_sampler_steps
+      snapshot_refresh_fraction
+      lower_bound
+      policy_evaluation
+    
+    EVALUATION
+    ==========
+    
+    LowerBoundConfig
+    ----------------
+      num_mc_init_states
+      chain_length
+      burn_in
+      proposal_state_std
+      proposal_action_std
+      random_seed
+      noise_batch_size
+      sampler
+      num_walkers
+      initial_state
+    
+    PolicyEvaluationConfig
+    ----------------------
+      state_grid_size
+      policy_noise_batch_size
+      policy_noise_seed
+      num_trajectories
+      horizon
+      simulation_seed
+      initial_state
+
+
 A useful way to read these config classes is by purpose:
 
 - `InventoryMDPConfig` stores the continuous inventory-model data: bounds, costs, discount factor, and demand distribution.
@@ -205,6 +346,30 @@ print()
 print_config('Policy-evaluation config', shared_policy_config)
 
 ```
+
+    Lower-bound evaluation config
+    -----------------------------
+    num_mc_init_states  : 32
+    chain_length        : 2000
+    burn_in             : 500
+    proposal_state_std  : 0.8
+    proposal_action_std : 0.8
+    random_seed         : 333
+    noise_batch_size    : 1000
+    sampler             : metropolis
+    num_walkers         : 32
+    initial_state       : 0.0
+    
+    Policy-evaluation config
+    ------------------------
+    state_grid_size         : 801
+    policy_noise_batch_size : 1024
+    policy_noise_seed       : 123456
+    num_trajectories        : 2000
+    horizon                 : 200
+    simulation_seed         : 2026
+    initial_state           : 0.0
+
 
 ---
 <a id="mdp"></a>
@@ -248,6 +413,16 @@ for name, value in mdp_summary.items():
     print(f'{name:<{name_width}} : {value}')
 
 ```
+
+    Inventory MDP summary
+    ---------------------
+    class               : SingleProductInventoryMDP
+    state bounds        : (-10.0, 10.0)
+    max order           : 10.0
+    discount factor     : 0.95
+    first grid actions  : [0. 1. 2. 3. 4. 5.] ...
+    sample demand draws : [4.13656296 2.21425206 5.62314134 4.97353024 7.89941546]
+
 
 Two design choices make the rest of the continuous-MDP code simpler:
 
@@ -328,6 +503,23 @@ print_matrix(
 
 ```
 
+    Random Fourier basis values
+    ---------------------------
+    shape: (3, 3)
+       state                     1   cos(0.113s - 2.383)  cos(-0.063s - 1.286)
+       -2.00                1.0000               -0.8613                0.3997
+        0.00                1.0000               -0.7257                0.2810
+        3.00                1.0000               -0.4560                0.0950
+    
+    Polynomial basis values
+    -----------------------
+    shape: (3, 3)
+       state           1           s         s^2
+       -2.00      1.0000     -2.0000      4.0000
+        0.00      1.0000      0.0000      0.0000
+        3.00      1.0000      3.0000      9.0000
+
+
 For non-experts, one helpful interpretation is:
 
 - the basis turns a continuous inventory state `s` into a feature vector
@@ -391,6 +583,82 @@ for model_class in [FALP, SelfGuidedALP, PSMD, SimpleLNSLowerBound]:
 
 ```
 
+    FALP
+    ----
+    parameter                    default        
+    ---------------------------  ---------------
+    mdp                          required       
+    config                       None           
+    num_random_features          1              
+    num_constraints              40             
+    num_state_relevance_samples  200            
+    basis_seed                   111            
+    bandwidth_choices            (0.001, 0.0001)
+    solver                       'auto'         
+    
+    SelfGuidedALP
+    -------------
+    parameter                     default              
+    ----------------------------  ---------------------
+    mdp                           required             
+    config                        None                 
+    max_random_features           10                   
+    batch_size                    1                    
+    num_constraints               40                   
+    num_state_relevance_samples   200                  
+    num_guiding_states            100                  
+    basis_seed                    111                  
+    bandwidth_choices             (0.001, 0.0001)      
+    guiding_violation             0.0                  
+    guiding_relax_fraction        0.02                 
+    guiding_abs_floor             1e-06                
+    guiding_retry_scales          (1.0, 2.0, 5.0, 10.0)
+    highs_method                  'highs-ds'           
+    primal_feasibility_tolerance  1e-07                
+    dual_feasibility_tolerance    1e-07                
+    
+    PSMD
+    ----
+    parameter             default 
+    --------------------  --------
+    mdp                   required
+    config                None    
+    num_iterations        1000    
+    H                     10      
+    N                     50      
+    eval_interval         50      
+    step_size             0.2     
+    step_size_power       0.5     
+    sampler_steps         20      
+    proposal_state_std    0.8     
+    proposal_action_std   0.8     
+    sampling_temperature  25.0    
+    refresh_fraction      0.1     
+    coefficient_clip      500.0   
+    random_seed           777     
+    initial_state         5.0     
+    
+    SimpleLNSLowerBound
+    -------------------
+    parameter            default 
+    -------------------  --------
+    mdp                  required
+    basis                required
+    coef                 required
+    num_random_features  required
+    num_mc_init_states   64      
+    chain_length         800     
+    burn_in              400     
+    proposal_state_std   0.8     
+    proposal_action_std  0.8     
+    random_seed          333     
+    noise_batch_size     1000    
+    sampler              'auto'  
+    num_walkers          32      
+    initial_state        5.0     
+    
+
+
 A simple way to separate their responsibilities is:
 
 - `FALP` and `SelfGuidedALP` are *fitters* for sampled ALP-style approximations of the continuous-state value function.
@@ -451,6 +719,57 @@ for helper in [
 
 ```
 
+    build_greedy_policy_lookup
+    --------------------------
+    parameter  default 
+    ---------  --------
+    model      required
+    config     None    
+    
+    estimate_upper_bound_fast
+    -------------------------
+    parameter  default 
+    ---------  --------
+    model      required
+    config     None    
+    return_se  False   
+    
+    estimate_actual_lower_bound_falp
+    --------------------------------
+    parameter            default 
+    -------------------  --------
+    falp_model           required
+    num_mc_init_states   64      
+    chain_length         800     
+    burn_in              400     
+    proposal_state_std   0.8     
+    proposal_action_std  0.8     
+    random_seed          333     
+    noise_batch_size     1000    
+    sampler              'auto'  
+    num_walkers          32      
+    initial_state        5.0     
+    return_stats         False   
+    
+    estimate_actual_lower_bound_sgalp
+    ---------------------------------
+    parameter            default 
+    -------------------  --------
+    sgalp_model          required
+    num_mc_init_states   64      
+    chain_length         800     
+    burn_in              400     
+    proposal_state_std   0.8     
+    proposal_action_std  0.8     
+    random_seed          333     
+    noise_batch_size     1000    
+    sampler              'auto'  
+    num_walkers          32      
+    initial_state        5.0     
+    return_stats         False   
+    
+
+
 The evaluation story is intentionally shared across the continuous-MDP notebooks:
 
 - FALP and SGALP both call the same lower-bound and policy-evaluation logic.
@@ -506,6 +825,32 @@ for group_index, (group_name, names) in enumerate(helper_groups.items()):
 
 ```
 
+    small utilities
+    ---------------
+      apply_tutorial_plot_style
+      make_shared_evaluation_configs
+      evaluate_vfa_on_grid
+      estimate_cvl_lower_bound
+    
+    experiment runners
+    ------------------
+      run_falp_grid
+      run_sgalp_grid
+      run_psmd_seed_grid
+      run_sgalp_stage_trace
+      run_falp_and_sgalp_comparison
+    
+    plot helpers
+    ------------
+      plot_value_function_curves
+      plot_bound_boxplots
+      plot_psmd_iteration_diagnostics
+      plot_psmd_acceptance_and_value
+      plot_psmd_sampling_snapshots
+      plot_falp_vs_sgalp_vfas_and_relevance
+      plot_falp_vs_sgalp_policy_costs
+
+
 A few design choices are worth noticing here:
 
 - the helper layer uses grouped config objects so continuous-MDP settings are visible at the notebook level
@@ -555,6 +900,13 @@ for path in notebook_paths:
     print(f'notebooks/{path.name}')
 
 ```
+
+    Continuous-MDP notebook files
+    -----------------------------
+    notebooks/how-code-works.ipynb
+    notebooks/psmd.ipynb
+    notebooks/self-guided-alp.ipynb
+
 
 The three continuous-MDP notebooks have different roles:
 
