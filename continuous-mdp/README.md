@@ -1130,8 +1130,8 @@ print('-' * 100)
 
 The simple sampled-ALP implementation above illustrates the construct and optimize steps, but it does not include a genuine refinement step. The remaining notebooks show how the COR cycle can be strengthened with self-adapting methods.
 
-- In `continuous-mdp/notebooks/psmd.ipynb`, we present constraint violation learning. This method reformulates the ALP as a regularized saddle-point problem and uses a primal-dual first-order algorithm to learn the violation landscape during the solve. In this way, it replaces the user's choice of a constraint-sampling distribution with an endogenous distribution that focuses on difficult state-action regions.
+- In [psmd.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/continuous-mdp/notebooks/psmd.ipynb), we present constraint violation learning. This method reformulates the ALP as a regularized saddle-point problem and uses a primal-dual first-order algorithm to learn the violation landscape during the solve. In this way, it replaces the user's choice of a constraint-sampling distribution with an endogenous distribution that focuses on difficult state-action regions.
 
-- In `continuous-mdp/notebooks/self-guided-alp.ipynb`, we present self-guided approximate linear programs. This method automates the design of basis functions through random-feature sampling and refines the approximation across iterations using guiding constraints. In this way, it addresses the construct and refine stages that the baseline sampled-ALP implementation leaves open.
+- In [self-guided-alp.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/continuous-mdp/notebooks/self-guided-alp.ipynb), we present self-guided approximate linear programs. This method automates the design of basis functions through random-feature sampling and refines the approximation across iterations using guiding constraints. In this way, it addresses the construct and refine stages that the baseline sampled-ALP implementation leaves open.
 
 ---
