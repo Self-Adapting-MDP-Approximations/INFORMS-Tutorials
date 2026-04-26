@@ -596,7 +596,7 @@ In both cases, the value of self-adaptation is measured relative to the same Lag
 
 A practical reading order is:
 
-1. [fnr-self-adaptation.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/fnr-self-adaptation.ipynb)
+1. [fnr-self-adaptation.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/weakly-coupled-mdp/notebooks/fnr-self-adaptation.ipynb)
    See how a feasible network represents joint actions and improves the executable policy.
 2. [delayed-allocation-self-adaptation.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/weakly-coupled-mdp/notebooks/delayed-allocation-self-adaptation.ipynb)
    See how refinement adds useful joint actions without starting from the full feasible-action representation.
