@@ -1,7 +1,7 @@
 ---
 # How the Continuous MDP Code Works
 ---
-This notebook is a guided tour of the continuous state-action MDP portion of the tutorial codebase.
+This notebook is a guided tour of the continuous-state MDP portion of the tutorial codebase.
 
 It is written for readers who want to understand how the inventory-control example is represented, approximated, fitted, and evaluated without reverse-engineering how the files fit together. The emphasis is on the *roles* of the continuous-MDP files, classes, helper functions, and notebooks.
 
@@ -10,11 +10,11 @@ It is written for readers who want to understand how the inventory-control examp
 
 1. [Introduction](#introduction)
 2. [Codebase Map](#file-map)
-3. [Configuration Objects](#config)
+3. [Config File Elements](#config)
 4. [Continuous Inventory MDP Layer](#mdp)
 5. [Basis Functions](#basis)
 6. [Model Classes](#models)
-7. [Evaluation Helpers](#evaluation)
+7. [Performance Diagnostics](#evaluation)
 8. [Orchestration Helpers](#helpers)
 9. [Notebook Workflow](#workflow)
 10. [Baseline ALP](#baseline)
@@ -26,18 +26,18 @@ It is written for readers who want to understand how the inventory-control examp
 <a id="introduction"></a>
 ## 1. Introduction
 
-For a discounted-cost continuous state-action Markov decision process (MDP), the goal is to compute a high-quality control policy. This tutorial studies that goal through approximate linear programming, a general-purpose approach that replaces the unknown value function with a value function approximation (VFA) and optimizes its coefficients by solving a linear optimization model, called an approximate linear program (ALP).
+For a discounted-cost continuous-state Markov decision process (MDP), the goal is to compute a high-quality control policy. This tutorial studies that goal through approximate linear programming, a general-purpose approach that replaces the unknown value function with a value function approximation (VFA) and optimizes its coefficients by solving a linear optimization model, called an approximate linear program (ALP).
 
 ALP is powerful, but it creates three practical design burdens:
 - **Basis-function design**: the user must choose the basis functions used in the VFA.
 - **State-relevance weighting**: the user must choose a state-relevance distribution, which determines how the fitted VFA is weighted in the ALP objective.
-- **Constraint handling**: the user must decide how to handle the Bellman-type constraints. In continuous state-action spaces, there is one constraint for every feasible state-action pair. Thus, the ALP is a linear optimization problem with infinitely many constraints, rather than a finite model that can be directly passed to existing solvers.
+- **Constraint handling**: the user must decide how to handle the Bellman-type constraints. In the continuous-state inventory setting, there is one constraint for every inventory state and feasible order quantity. Even when the tutorial evaluates actions on a discrete order grid, the continuous state dimension leaves a very large constraint system that cannot be directly enumerated in the way a small finite MDP can.
 
-This tutorial uses an inventory-control problem to illustrate how self-adapting frameworks make ALP more accessible. The inventory problem has a continuous inventory state, a continuous order quantity, stochastic demand, holding, backlog, disposal, and lost-sales costs. These features make it a useful testbed for methods that reduce manual feature engineering, improve constraint handling, and limit repeated trial-and-error tuning.
+This tutorial uses an inventory-control problem to illustrate how self-adapting frameworks make ALP more accessible. The inventory problem has a continuous inventory state, a bounded order quantity evaluated on a configurable action grid, stochastic demand, holding, backlog, disposal, and lost-sales costs. These features make it a useful testbed for methods that reduce manual feature engineering, improve constraint handling, and limit repeated trial-and-error tuning.
 
 We organize the material through the **COR cycle**: construct, optimize, and refine.
 
-- **Construct**: instantiate the inventory MDP, choose basis functions, such as linear basis functions, choose a state-relevance distribution, such as the uniform distribution, and form the corresponding ALP model. Because the full ALP has infinitely many constraints in continuous state-action spaces, we replace it with a finite sampled-constraint approximation. That is, we sample a finite set of state-action pairs and enforce the ALP constraints only at those sampled pairs. This is known as the constraint-sampling approach.
+- **Construct**: instantiate the inventory MDP, choose basis functions, such as linear basis functions, choose a state-relevance distribution, such as the uniform distribution, and form the corresponding ALP model. Because the full ALP has too many constraints to enumerate in the continuous-state setting, we replace it with a finite sampled-constraint approximation. That is, we sample a finite set of state-action pairs and enforce the ALP constraints only at those sampled pairs. This is known as the constraint-sampling approach.
 
 - **Optimize**: solve the resulting finite approximation to obtain an optimized VFA and compute its associated greedy policy.
 
@@ -142,7 +142,7 @@ for path in sorted((PROJECT_ROOT / 'notebooks').glob('*.ipynb')):
 | `mdp.py` | discounted continuous inventory model | defines state dynamics, action bounds, costs, demand sampling, and vectorized evaluation routines |
 | `../basis.py` | shared value-function basis families | provides polynomial and random Fourier basis functions for VFA |
 | `self_guided_alp/falp.py` | FALP solver | solves a constraint-sampled ALP for a fixed number of random features |
-| `self_guided_alp/sgalp.py` | SGALP solver | solves a sequence of constraint-sampled ALPs with increasing random features and guiding constraints that inform the state-relevance distribution |
+| `self_guided_alp/sgalp.py` | SGALP solver | solves a sequence of constraint-sampled ALPs with increasing random features and guiding constraints at sampled states |
 | `self_guided_alp/cvl_lower_bound.py` | lower-bound estimation | estimates a lower bound on the optimal policy cost for a fitted VFA using a CVL-based heuristic |
 | `policy.py` | greedy-policy simulation | estimates the simulated cost of the policy induced by a fitted value approximation |
 | `psmd/psmd.py` | PSMD baseline | provides a compact stochastic-gradient comparator for the same inventory MDP |
@@ -152,226 +152,80 @@ for path in sorted((PROJECT_ROOT / 'notebooks').glob('*.ipynb')):
 
 ---
 <a id="config"></a>
-## 3. Configuration Objects
+## 3. Config File Elements
 
-The continuous-MDP code uses grouped config objects to keep modeling, approximation, solver, and evaluation choices separate.
+`config.py` is the control panel for the continuous-MDP experiments. The most important edit points are the uppercase constants near the top of the file. The dataclasses below those constants simply package the same values so the MDP, ALP solvers, PSMD routine, lower-bound estimator, and policy simulator all receive consistent settings.
 
-Instead of passing many unrelated scalars through constructors, the project uses dataclasses to bundle related choices together. This is especially helpful in the continuous inventory example because the same experiment combines demand sampling, random-feature sampling, LP solver tolerances, lower-bound sampling, and policy simulation.
+A useful way to read `config.py` is by block:
 
+| Config block | Examples | What it controls |
+| --- | --- | --- |
+| Shared experiment sizes | `SEEDS`, `NUM_CONSTRAINTS`, `NUM_STATE_RELEVANCE_SAMPLES`, `FEATURE_COUNTS` | The seed grid and sampled-ALP sizes used across the polynomial ALP, FALP, and SGALP experiments. |
+| Inventory instance | `LOWER_STATE_BOUND`, `UPPER_STATE_BOUND`, `MAX_ORDER`, costs, demand parameters, `ACTION_STEP` | The actual inventory MDP: state range, order grid, stochastic demand, and cost structure. |
+| Policy evaluation | `POLICY_STATE_GRID_SIZE`, `POLICY_NOISE_BATCH_SIZE`, `NUM_POLICY_TRAJECTORIES`, `POLICY_HORIZON`, `INITIAL_STATE` | How greedy policies are computed and simulated. |
+| Lower-bound estimation | `LOWER_BOUND_NUM_MC_INIT_STATES`, `LOWER_BOUND_CHAIN_LENGTH`, `LOWER_BOUND_SAMPLER` | How fitted VFAs are evaluated through the CVL-style lower-bound estimator. |
+| Polynomial ALP example | `POLYNOMIAL_EXPONENTS`, `POLYNOMIAL_ALP_PROBE_STATES` | The hand-built baseline ALP shown in this notebook. |
+| Random-feature ALPs | `RANDOM_FEATURE_BANDWIDTH_CHOICES`, `FALP_FEATURE_COUNTS`, `SGALP_FEATURE_COUNTS` | The random Fourier feature families used by FALP and SGALP. |
+| SGALP guiding controls | `NUM_GUIDING_STATES`, `GUIDING_RELAX_FRACTION`, `GUIDING_RETRY_SCALES` | How SGALP carries information from one stage to the next. |
+| PSMD controls | `PSMD_NUM_ITERATIONS`, `PSMD_NUM_SAMPLER_PARTICLES`, `PSMD_NUM_NOISE_SAMPLES_PER_ITERATION` | The stochastic-gradient baseline and its state-action sampler. |
 
+Two parameters are especially important for consistency:
 
-```python
-from dataclasses import fields
+- `ACTION_STEP` defines the discrete order quantities used by sampled ALP constraints, PSMD sampler actions, and greedy-policy lookup.
+- `NUM_CONSTRAINTS` and `NUM_STATE_RELEVANCE_SAMPLES` set the sampled-ALP scale used by the polynomial ALP example, FALP, and SGALP.
 
-from config import (
-    FALPConfig,
-    GuidingConstraintConfig,
-    HiGHSSolverConfig,
-    InventoryMDPConfig,
-    LowerBoundConfig,
-    PolicyEvaluationConfig,
-    PSMDConfig,
-    RandomFeatureConfig,
-    SGALPConfig,
-)
-
-config_groups = {
-    'model': [InventoryMDPConfig],
-    'basis and solver': [RandomFeatureConfig, HiGHSSolverConfig, GuidingConstraintConfig],
-    'algorithms': [FALPConfig, SGALPConfig, PSMDConfig],
-    'evaluation': [LowerBoundConfig, PolicyEvaluationConfig],
-}
-
-for group_index, (group_name, config_classes) in enumerate(config_groups.items()):
-    if group_index:
-        print()
-    print(group_name.upper())
-    print('=' * len(group_name))
-    for config_class in config_classes:
-        print(f'\n{config_class.__name__}')
-        print('-' * len(config_class.__name__))
-        for config_field in fields(config_class):
-            print(f'  {config_field.name}')
-
-```
-
-    MODEL
-    =====
-
-    InventoryMDPConfig
-    ------------------
-      mdp_name
-      discount
-      random_seed
-      lower_state_bound
-      upper_state_bound
-      max_order
-      purchase_cost
-      holding_cost
-      backlog_cost
-      disposal_cost
-      lost_sale_cost
-      demand_mean
-      demand_std
-      demand_min
-      demand_max
-      num_noise_samples
-      action_step
-
-    BASIS AND SOLVER
-    ================
-
-    RandomFeatureConfig
-    -------------------
-      bandwidth_choices
-      random_seed
-
-    HiGHSSolverConfig
-    -----------------
-      method
-      primal_feasibility_tolerance
-      dual_feasibility_tolerance
-
-    GuidingConstraintConfig
-    -----------------------
-      num_guiding_states
-      allowed_violation
-      relax_fraction
-      absolute_floor
-      retry_scales
-
-    ALGORITHMS
-    ==========
-
-    FALPConfig
-    ----------
-      num_random_features
-      num_constraints
-      num_state_relevance_samples
-      random_features
-      solver
-
-    SGALPConfig
-    -----------
-      max_random_features
-      batch_size
-      num_constraints
-      num_state_relevance_samples
-      random_features
-      guiding
-      solver
-
-    PSMDConfig
-    ----------
-      num_iterations
-      H
-      N
-      eval_interval
-      step_size
-      step_size_power
-      sampler_steps
-      proposal_state_std
-      proposal_action_std
-      sampling_temperature
-      refresh_fraction
-      coefficient_clip
-      random_seed
-      initial_state
-      snapshot_iterations
-      snapshot_sample_size
-      snapshot_sampler_steps
-      snapshot_refresh_fraction
-      lower_bound
-      policy_evaluation
-
-    EVALUATION
-    ==========
-
-    LowerBoundConfig
-    ----------------
-      num_mc_init_states
-      chain_length
-      burn_in
-      proposal_state_std
-      proposal_action_std
-      random_seed
-      noise_batch_size
-      sampler
-      num_walkers
-      initial_state
-
-    PolicyEvaluationConfig
-    ----------------------
-      state_grid_size
-      policy_noise_batch_size
-      policy_noise_seed
-      num_trajectories
-      horizon
-      simulation_seed
-      initial_state
-
-
-A useful way to read these config classes is by purpose:
-
-- `InventoryMDPConfig` stores the continuous inventory-model data: bounds, costs, discount factor, and demand distribution.
-- `RandomFeatureConfig` controls how the random Fourier basis for continuous states is sampled.
-- `HiGHSSolverConfig` stores numerical settings for the sampled linear-program solver.
-- `GuidingConstraintConfig` stores SGALP-only settings for staged continuous-state guiding constraints.
-- `FALPConfig`, `SGALPConfig`, and `PSMDConfig` store algorithm-level settings.
-- `LowerBoundConfig` and `PolicyEvaluationConfig` store evaluation settings shared across the continuous-MDP notebooks.
-- The uppercase constants at the top of `config.py`, such as `NUM_CONSTRAINTS`, are the main edit points for shared experiment sizes.
-- `CONTINUOUS_MDP_NOTEBOOK_CONFIG` collects the experiment settings used by `how-code-works.ipynb`, `self-guided-alp.ipynb`, and `psmd.ipynb`.
-
-The helper function `make_shared_evaluation_configs(...)` now lives in `config.py`, so lower-bound and policy-cost settings are aligned before any notebook imports helper routines. That makes the reported comparisons reflect the algorithms rather than different evaluation choices.
+The object `CONTINUOUS_MDP_NOTEBOOK_CONFIG` collects these settings for the notebooks. In normal use, edit the uppercase constants first; the grouped configs update from those constants when the module is imported.
 
 
 
 ```python
-from dataclasses import fields
-
-from config import CONTINUOUS_MDP_NOTEBOOK_CONFIG, make_shared_evaluation_configs
-
-
-def print_config(title, config):
-    print(title)
-    print('-' * len(title))
-    name_width = max(len(config_field.name) for config_field in fields(config))
-    for config_field in fields(config):
-        value = getattr(config, config_field.name)
-        print(f'{config_field.name:<{name_width}} : {value}')
+from config import CONTINUOUS_MDP_NOTEBOOK_CONFIG
 
 
 tutorial_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG
-shared_lower_bound_config, shared_policy_config = make_shared_evaluation_configs()
 
-print_config('Lower-bound evaluation config', shared_lower_bound_config)
-print()
-print_config('Policy-evaluation config', shared_policy_config)
+config_summary = {
+    'seeds': tutorial_config.seeds,
+    'sampled ALP constraints': tutorial_config.falp.num_constraints,
+    'state-relevance samples': tutorial_config.falp.num_state_relevance_samples,
+    'feature counts': tutorial_config.falp_feature_counts,
+    'state bounds': (
+        tutorial_config.inventory.lower_state_bound,
+        tutorial_config.inventory.upper_state_bound,
+    ),
+    'max order': tutorial_config.inventory.max_order,
+    'action step': tutorial_config.inventory.action_step,
+    'demand samples': tutorial_config.inventory.num_noise_samples,
+    'policy lookup states': tutorial_config.policy_evaluation.state_grid_size,
+    'policy simulation paths': tutorial_config.policy_evaluation.num_trajectories,
+    'policy horizon': tutorial_config.policy_evaluation.horizon,
+    'lower-bound sampler': tutorial_config.lower_bound.sampler,
+    'lower-bound chain length': tutorial_config.lower_bound.chain_length,
+}
+
+print('Current shared config values')
+print('----------------------------')
+name_width = max(len(name) for name in config_summary)
+for name, value in config_summary.items():
+    print(f'{name:<{name_width}} : {value}')
 
 ```
 
-    Lower-bound evaluation config
-    -----------------------------
-    num_mc_init_states  : 128
-    chain_length        : 2000
-    burn_in             : 500
-    proposal_state_std  : 2
-    proposal_action_std : 2
-    random_seed         : 654321
-    noise_batch_size    : 500
-    sampler             : metropolis
-    num_walkers         : 10
-    initial_state       : 6.0
-
-    Policy-evaluation config
-    ------------------------
-    state_grid_size         : 2000
-    policy_noise_batch_size : 1000
-    policy_noise_seed       : 123456
-    num_trajectories        : 1000
-    horizon                 : 200
-    simulation_seed         : 2026
-    initial_state           : 6.0
+    Current shared config values
+    ----------------------------
+    seeds                    : (111, 222, 333, 444, 555)
+    sampled ALP constraints  : 3000
+    state-relevance samples  : 3000
+    feature counts           : (0, 1, 2, 3, 4, 5, 6)
+    state bounds             : (-4.0, 12.0)
+    max order                : 6.0
+    action step              : 0.1
+    demand samples           : 1000
+    policy lookup states     : 2000
+    policy simulation paths  : 1000
+    policy horizon           : 200
+    lower-bound sampler      : metropolis
+    lower-bound chain length : 2000
 
 
 ---
@@ -386,7 +240,7 @@ print_config('Policy-evaluation config', shared_policy_config)
 That second part is the core of the continuous-MDP example. `SingleProductInventoryMDP` defines:
 
 - the continuous inventory state
-- the continuous order-quantity action, with feasible action bounds depending on the current state
+- the bounded order-quantity action grid used by the tutorial solvers and policy lookups
 - the stochastic demand process
 - the one-period holding, shortage, and ordering cost
 - the vectorized sampling routines reused by ALP fitting, lower-bound estimation, PSMD updates, and policy simulation
@@ -418,6 +272,8 @@ for name, value in mdp_summary.items():
 ```
 
     Inventory MDP summary
+
+
     ---------------------
     class               : SingleProductInventoryMDP
     state bounds        : (-4.0, 12.0)
@@ -442,7 +298,7 @@ Two design choices make the rest of the continuous-MDP code simpler:
 There are two basis classes:
 
 - `RandomFourierBasis1D`: used by FALP and SGALP to approximate a value function over a continuous one-dimensional state space
-- `PolynomialBasis1D`: used by the lightweight PSMD baseline
+- `PolynomialBasis1D`: used by the lightweight PSMD baseline and the baseline ALP example
 
 The key conceptual point is that FALP and SGALP use the *same* random-feature family. Their difference is not the basis. Their difference is how they impose sampled Bellman constraints and how SGALP adds staged guiding constraints as the basis grows.
 
@@ -671,115 +527,25 @@ A simple way to separate their responsibilities is:
 
 ---
 <a id="evaluation"></a>
-## 7. Evaluation Helpers
+## 7. Performance Diagnostics
 
-After fitting a continuous-MDP approximation, the project reports two complementary diagnostics:
+After fitting a value-function approximation, the notebooks report diagnostics that answer different questions. They should not be read as interchangeable numbers.
 
-- a **lower bound** from `self_guided_alp/cvl_lower_bound.py`
-- a **policy cost** from `policy.py`
+| Diagnostic | What it answers | Where it comes from |
+| --- | --- | --- |
+| ALP objective | How large is the fitted VFA on the sampled state-relevance distribution? | The optimization objective inside the sampled ALP. |
+| CVL lower-bound estimate | What lower-bound estimate is implied by the fitted VFA and sampled Bellman residuals? | `self_guided_alp/cvl_lower_bound.py`. |
+| Policy cost | What cost is obtained by the greedy policy induced by the fitted VFA? | `policy.py`, using a state grid, the `ACTION_STEP` action grid, and Monte Carlo simulation. |
+| Optimality-gap estimate | How far is the simulated policy cost from the lower-bound estimate? | `(policy cost - lower bound) / policy cost`, when both quantities are available. |
+| Best lower/upper bounds | What are the best estimates seen so far across feature counts or iterations? | The grid runners track max lower bound and min policy cost for each seed. |
 
-The lower bound is a performance certificate based on sampled Bellman residuals. The policy cost is a simulation-based estimate of what the induced greedy ordering policy actually costs from the chosen initial inventory state.
+The distinction matters. A sampled ALP objective can be useful for understanding the solve, but it is not automatically a valid lower bound because the ALP constraints are sampled. The policy cost is the deployable-policy diagnostic: it estimates how expensive the induced ordering policy is from the configured initial state. The lower-bound estimate is what makes an optimality-gap estimate possible for FALP, SGALP, and PSMD-style fitted approximations.
 
+The project keeps this evaluation protocol shared across notebooks:
 
-
-```python
-import inspect
-
-from policy import build_greedy_policy_lookup, estimate_upper_bound_fast
-from self_guided_alp.cvl_lower_bound import (
-    estimate_actual_lower_bound_falp,
-    estimate_actual_lower_bound_sgalp,
-)
-
-
-def format_default(parameter):
-    if parameter.default is inspect.Parameter.empty:
-        return 'required'
-    return repr(parameter.default)
-
-
-def print_helper_summary(helper):
-    parameters = list(inspect.signature(helper).parameters.values())
-    name_width = max(9, *(len(parameter.name) for parameter in parameters))
-    default_width = max(7, *(len(format_default(parameter)) for parameter in parameters))
-
-    print(helper.__name__)
-    print('-' * len(helper.__name__))
-    print(f'{"parameter":<{name_width}}  {"default":<{default_width}}')
-    print(f'{"-" * name_width}  {"-" * default_width}')
-    for parameter in parameters:
-        print(f'{parameter.name:<{name_width}}  {format_default(parameter):<{default_width}}')
-    print()
-
-
-for helper in [
-    build_greedy_policy_lookup,
-    estimate_upper_bound_fast,
-    estimate_actual_lower_bound_falp,
-    estimate_actual_lower_bound_sgalp,
-]:
-    print_helper_summary(helper)
-
-```
-
-    build_greedy_policy_lookup
-    --------------------------
-    parameter  default
-    ---------  --------
-    model      required
-    config     None
-
-    estimate_upper_bound_fast
-    -------------------------
-    parameter  default
-    ---------  --------
-    model      required
-    config     None
-    return_se  False
-
-    estimate_actual_lower_bound_falp
-    --------------------------------
-    parameter            default
-    -------------------  --------
-    falp_model           required
-    num_mc_init_states   64
-    chain_length         800
-    burn_in              400
-    proposal_state_std   0.8
-    proposal_action_std  0.8
-    random_seed          333
-    noise_batch_size     1000
-    sampler              'auto'
-    num_walkers          32
-    initial_state        5.0
-    return_stats         False
-
-    estimate_actual_lower_bound_sgalp
-    ---------------------------------
-    parameter            default
-    -------------------  --------
-    sgalp_model          required
-    num_mc_init_states   64
-    chain_length         800
-    burn_in              400
-    proposal_state_std   0.8
-    proposal_action_std  0.8
-    random_seed          333
-    noise_batch_size     1000
-    sampler              'auto'
-    num_walkers          32
-    initial_state        5.0
-    return_stats         False
-
-
-
-The evaluation story is intentionally shared across the continuous-MDP notebooks:
-
-- FALP and SGALP both call the same lower-bound and policy-evaluation logic.
-- PSMD also uses the same `estimate_upper_bound_fast(...)` helper through a small fitted-model view.
-- The notebooks usually create `shared_lower_bound_config` and `shared_policy_config` once and reuse them throughout so comparisons stay apples-to-apples.
-
-This shared evaluation layer matters because the algorithms are approximate and simulation-based. Keeping the evaluation protocol fixed makes it easier to interpret differences between value-function fits.
+- FALP and SGALP use the same lower-bound and policy-evaluation routines.
+- PSMD exposes a small fitted-model view so it can use the same policy simulator and lower-bound estimator.
+- Shared settings in `config.py` keep the initial state, simulation horizon, noise batches, and sampler parameters aligned across methods.
 
 
 ---
@@ -872,7 +638,7 @@ In practice, the workflow is:
 1. find the continuous-MDP project root and import shared modules
 2. build the inventory MDP and shared evaluation config bundles
 3. choose experiment grids such as random-feature counts, SGALP stages, or PSMD seeds
-4. run a helper like `run_falp_grid(...)`, `run_falp_sgalp_comparison(...)`, or `run_psmd_seed_grid(...)`
+4. run a helper like `run_falp_grid(...)`, `run_falp_and_sgalp_comparison(...)`, or `run_psmd_seed_grid(...)`
 5. visualize fitted value functions, lower bounds, policy costs, and gaps
 6. interpret the diagnostics as approximations for the continuous inventory-control problem
 
@@ -924,7 +690,7 @@ This example ties the code back to the COR cycle using the simplest VFA architec
 
 - **Construct**: choose the inventory MDP, the polynomial VFA $V_\beta(s)=\beta_0+\beta_1s+\beta_2s^2$, a state-relevance sample, and a finite sample of Bellman constraints.
 - **Optimize**: solve the finite sampled ALP with `scipy.optimize.linprog`.
-- **Refine**: convert the fitted VFA into a greedy policy and simulate that policy from the initial state.
+- **Refine/evaluate**: convert the fitted VFA into a greedy policy and simulate that policy from the initial state. This example reports the diagnostic, but it does not feed the result back into a new construction step.
 
 The important code parameters are:
 
@@ -933,8 +699,8 @@ The important code parameters are:
 | Polynomial basis | $\phi(s)$ | `PolynomialBasis1D(exponents=(0, 1, 2))` | `[1, s, s^2]` | Defines the VFA $V_\beta(s)=\phi(s)^\top\beta$. |
 | Demand samples per Bellman expectation | $L$ | `tutorial_config.inventory.num_noise_samples` | from `config.py` | `make_inventory_mdp(...)` stores this fixed demand batch in `mdp.list_demand_obs`; `get_batch_next_state(...)` and `get_expected_cost(...)` use it inside each sampled constraint. |
 | Constraint samples | $N$ | `tutorial_config.polynomial_alp.num_constraints` | from `config.py` | `sample_constraint_state_actions(num_constraints)` draws the state-action pairs $(s_i,a_i)$ used as sampled Bellman constraints. |
-| State-relevance samples | $M$ | `tutorial_config.polynomial_alp.num_state_relevance_samples` | from `config.py` | `sample_state_relevance_states(...)` builds the empirical objective coefficient `c`. The extra states are the lower bound, zero, and upper bound. |
-| Action grid spacing | none | `tutorial_config.inventory.action_step` | from `config.py` | Defines the discrete order quantities used when constructing the greedy policy. |
+| State-relevance samples | $M$ | `tutorial_config.polynomial_alp.num_state_relevance_samples` | from `config.py` | `sample_state_relevance_states(...)` builds the empirical objective coefficient `c` from uniformly sampled states over the inventory interval. |
+| Action grid spacing | none | `tutorial_config.inventory.action_step` | from `config.py` | Defines the discrete order quantities used by sampled ALP constraints, PSMD sampler actions, and greedy-policy lookup. |
 | Reproducibility seed | none | `tutorial_config.polynomial_alp.seeds` | from `config.py` | Controls the sampled constraints, state-relevance states, and default demand batch. |
 | Policy lookup grid | none | `tutorial_config.polynomial_alp.policy_grid_size` | from `config.py` | Builds a grid of inventory states where greedy actions are precomputed. |
 | Demand samples for one-step lookahead | none | `tutorial_config.policy_evaluation.policy_noise_batch_size` | from `config.py` | Approximates the expectation in the greedy policy decision rule. |
@@ -944,9 +710,9 @@ The important code parameters are:
 
 In this example, the basis vector is $\phi(s)=(1,s,s^2)^\top$, so the fitted value function is $V_\beta(s)=\phi(s)^\top\beta=\beta_0+\beta_1s+\beta_2s^2$. The ideal ALP objective averages $V_\beta(s)$ under a state-relevance distribution. In the code, this expectation is replaced by an empirical average over sampled states $\bar s_1,\ldots,\bar s_M$:
 $$
-    \mathbb{E}_{\chi}[V_\beta(s)] \;\approx\; \frac{1}{M}\sum_{m=1}^M V_\beta(\bar s_m) = \frac{1}{M}\sum_{m=1}^M \phi(\bar s_m)^\top\beta.
+    \mathbb{E}_{\nu}[V_\beta(s)] \;\approx\; \frac{1}{M}\sum_{m=1}^M V_\beta(\bar s_m) = \frac{1}{M}\sum_{m=1}^M \phi(\bar s_m)^\top\beta.
 $$
-This empirical average is the vector `c` in the code. The ALP constraints are also sampled. For each sampled state-action pair $(s_i,a_i)$, the continuous ALP constraint is approximated by a finite demand average. If $S'_{i\ell}$ is the next state obtained from demand sample $W_{i\ell}$, then the sampled constraint is
+This empirical average is the vector `c` in the code. The ALP constraints are also sampled. For each sampled state-action pair $(s_i,a_i)$, the Bellman inequality is approximated by a finite demand average. If $S'_{i\ell}$ is the next state obtained from demand sample $W_{i\ell}$, then the sampled constraint is
 $$
     \phi(s_i)^\top\beta \le \frac{1}{L}\sum_{\ell=1}^L \left[ c(s_i,a_i,W_{i\ell}) + \gamma \phi(S'_{i\ell})^\top\beta \right], \qquad i=1,\ldots,N.
 $$
@@ -984,17 +750,17 @@ alp_results = run_polynomial_sampled_alp_example(
     =========================================================================================================================
         seed          ALP obj      policy cost       diff %  bind constr    min slack   time (sec)
     -------------------------------------------------------------------------------------------------------------------------
-         111           2304.3           4891.1         52.9            3       0.0000         7.88
+         111           2304.3           4891.1         52.9            3       0.0000         7.67
     -------------------------------------------------------------------------------------------------------------------------
-         222           2250.4           7691.1         70.7            3       0.0000         8.03
+         222           2250.4           7691.1         70.7            3       0.0000         7.77
     -------------------------------------------------------------------------------------------------------------------------
-         333           2304.7           4709.8         51.1            3       0.0000         8.08
+         333           2304.7           4709.8         51.1            3       0.0000         7.82
     -------------------------------------------------------------------------------------------------------------------------
-         444           2314.4           4503.9         48.6            3       0.0000         7.82
+         444           2314.4           4503.9         48.6            3       0.0000         7.74
     -------------------------------------------------------------------------------------------------------------------------
-         555           2277.2           5949.6         61.7            3       0.0000         7.82
+         555           2277.2           5949.6         61.7            3       0.0000         7.78
     -------------------------------------------------------------------------------------------------------------------------
-     AVERAGE           2290.2           5549.1         57.0                                   7.93
+     AVERAGE           2290.2           5549.1         57.0                                   7.76
     =========================================================================================================================
 
     Shared ALP example settings
@@ -1024,10 +790,10 @@ alp_results = run_polynomial_sampled_alp_example(
 <a id="self-adapt"></a>
 ## 11. Self-Adaptation Improves the Baseline ALP
 
-The sampled-ALP implementation above illustrates the **construct** and **optimize** steps of the COR cycle, but it does not include a genuine **refine** step. In particular, the reported `ALP obj` values are not guaranteed to be valid lower bounds on the optimal cost, because the ALP is solved only over sampled constraints rather than over the full Bellman-inequality constraint set. Consequently, the values reported in the `diff %` column, which measure the percentage difference between the simulated policy cost and the sampled-ALP objective, should not be interpreted as certified optimality gaps. For example, an average `diff %` of %57.0  does not, by itself, tell us whether the gap is large because the baseline ALP policy is poor or because the sampled objective is a weak, uncertified lower bound. This ambiguity is precisely what prevents the baseline implementation from supporting a principled refinement step. The remaining notebooks show how the COR cycle can be strengthened through self-adapting methods that improve both the optimization of the ALP and the construction of the approximation architecture.
+The sampled-ALP implementation above illustrates the **construct** and **optimize** steps of the COR cycle, but it does not include a genuine **refine** step. In particular, the reported `ALP obj` values are not guaranteed to be valid lower bounds on the optimal cost, because the ALP is solved only over sampled constraints rather than over the full Bellman-inequality constraint set. Consequently, the values reported in the `diff %` column, which measure the percentage difference between the simulated policy cost and the sampled-ALP objective, should not be interpreted as certified optimality gaps. For example, a large average `diff %` does not, by itself, tell us whether the difference is large because the baseline ALP policy is poor or because the sampled objective is a weak, uncertified lower-bound proxy. This ambiguity is precisely what prevents the baseline implementation from supporting a principled refinement step. The remaining notebooks show how the COR cycle can be strengthened through self-adapting methods that improve both the optimization of the ALP and the construction of the approximation architecture.
 
-- In `continuous-mdp/notebooks/psmd.ipynb`, we present **constraint violation learning**. This method reformulates the ALP as a regularized saddle-point problem and uses a primal-dual first-order algorithm to learn the constraint-violation landscape during the solve. Instead of relying on uniform constraint sampling, as in the baseline ALP, the method endogenously concentrates computational effort on difficult state-action regions where Bellman violations are most informative. As shown in the notebook, this more principled treatment of ALP constraints substantially improves the upper bound relative to the baseline ALP by producing stronger policies with lower simulated costs. At the same time, it delivers certified lower bounds, and therefore meaningful optimality gaps, which the sampled baseline ALP does not provide. In this sense, constraint violation learning refines both the construction and optimization steps of the baseline ALP.
+- In [psmd.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/continuous-mdp/notebooks/psmd.ipynb), we present **constraint violation learning**. This method reformulates the ALP as a regularized saddle-point problem and uses a primal-dual first-order algorithm to learn the constraint-violation landscape during the solve. Instead of relying on uniform constraint sampling, as in the baseline ALP, the method endogenously concentrates computational effort on difficult state-action regions where Bellman violations are most informative. As shown in the notebook, this more principled treatment of ALP constraints substantially improves the upper bound relative to the baseline ALP by producing stronger policies with lower simulated costs. At the same time, it reports lower-bound estimates and corresponding optimality-gap estimates, which the sampled baseline ALP does not provide. In this sense, constraint violation learning refines both the construction and optimization steps of the baseline ALP.
 
-- In `continuous-mdp/notebooks/self-guided-alp.ipynb`, we present **self-guided approximate linear programs**. This method automates the construction of basis functions through random-feature sampling and refines the approximation across iterations using guiding constraints. In contrast to the baseline ALP, which relies on a fixed, hand-specified set of basis functions, the self-guided approach expands and steers the approximation architecture using information revealed during computation. As shown in the notebook, this produces stronger lower bounds and lower policy costs than the baseline ALP; in the reported experiments, it also improves on constraint violation learning with fixed bases. Most of the improvement comes from using random features to substantially strengthen the lower bound, together with a constraint-violation-learning-based heuristic that converts the constraint-sampled self-guided ALP models into certified optimality gaps. Thus, self-guided ALP tightens the optimality gap by refining all three stages of the COR cycle: construction, optimization, and refinement.
+- In [self-guided-alp.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/continuous-mdp/notebooks/self-guided-alp.ipynb), we present **self-guided approximate linear programs**. This method automates the construction of basis functions through random-feature sampling and refines the approximation across iterations using guiding constraints. In contrast to the baseline ALP, which relies on a fixed, hand-specified set of basis functions, the self-guided approach expands and steers the approximation architecture using information revealed during computation. As shown in the notebook, this produces stronger lower bounds and lower policy costs than the baseline ALP; in the reported experiments, it also improves on constraint violation learning with fixed bases. Most of the improvement comes from using random features to substantially strengthen the lower-bound estimates, together with a constraint-violation-learning-based heuristic that turns the constraint-sampled self-guided ALP models into reported optimality-gap estimates. Thus, self-guided ALP tightens the optimality gap by refining all three stages of the COR cycle: construction, optimization, and refinement.
 
 ---

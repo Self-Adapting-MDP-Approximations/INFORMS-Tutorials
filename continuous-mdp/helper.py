@@ -444,7 +444,6 @@ def plot_inventory_constraint_threshold_heatmap(
     colorbar.set_label(r"$f(\beta; s, a)$", fontsize=fontsize)
     colorbar.ax.tick_params(labelsize=fontsize)
 
-    ax.set_title(r"Constraint threshold $f(\beta;s,a)$", fontsize=fontsize)
     ax.set_xlabel(r"Inventory state $s$", fontsize=fontsize)
     ax.set_ylabel(r"Order quantity $a$", fontsize=fontsize)
     ax.set_xlim(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound)
@@ -453,13 +452,12 @@ def plot_inventory_constraint_threshold_heatmap(
     ax.legend(loc="lower right", frameon=True, fontsize=fontsize)
     fig.tight_layout()
     plt.show()
-    return fig, ax
 
 
 def plot_inventory_gibbs_densities(
     plot_data,
     lambda_values=(50.0, 100.0, 200.0),
-    figsize=(12, 3.5),
+    figsize=(10, 4),
     fontsize=12,
     cmap="viridis",
 ):
@@ -526,6 +524,10 @@ def plot_inventory_gibbs_densities(
         ax.set_xlabel(r"Inventory state $s$", fontsize=fontsize)
         ax.set_xlim(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound)
         ax.set_ylim(0.0, plot_data.mdp.max_order)
+        
+        ax.set_xticks(np.arange(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound,4))
+        ax.set_yticks(np.arange(0, plot_data.mdp.max_order,2))
+
         ax.tick_params(labelsize=fontsize)
 
     axes[0].set_ylabel(r"Order quantity $a$", fontsize=fontsize)
@@ -1703,7 +1705,7 @@ def plot_psmd_sampling_snapshots(
     plot_seed,
     ncols=6,
     offset=0.5,
-    figsize=(12, 3.5),
+    figsize=(12, 3),
     fontsize=12,
 ):
     """
@@ -1742,6 +1744,8 @@ def plot_psmd_sampling_snapshots(
         ax.set_title(f"Iteration {iteration:,}", fontsize=fontsize)
         ax.set_xlim(solver.mdp.lower_state_bound - offset, solver.mdp.upper_state_bound + offset)
         ax.set_ylim(-offset + 0.0, offset + solver.mdp.max_order)
+        ax.set_xticks(np.arange(solver.mdp.lower_state_bound, solver.mdp.upper_state_bound,4))
+        ax.set_yticks(np.arange(0, solver.mdp.max_order,2))
         ax.set_xlabel("State", fontsize=fontsize)
         ax.tick_params(labelsize=fontsize)
         ax.grid(True, alpha=0.3)
