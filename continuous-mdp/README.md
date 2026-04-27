@@ -18,7 +18,7 @@ It is written for readers who want to understand how the inventory-control examp
 8. [Orchestration Helpers](#helpers)
 9. [Notebook Workflow](#workflow)
 10. [Baseline ALP](#baseline)
-11. [How Self-Adaptation Improves the Baseline ALP](#self-adapt)
+11. [Self-Adaptation Improves the Baseline ALP](#self-adapt)
 
 
 
@@ -352,23 +352,23 @@ print_config('Policy-evaluation config', shared_policy_config)
 
     Lower-bound evaluation config
     -----------------------------
-    num_mc_init_states  : 32
+    num_mc_init_states  : 128
     chain_length        : 2000
     burn_in             : 500
-    proposal_state_std  : 0.8
-    proposal_action_std : 0.8
-    random_seed         : 333
-    noise_batch_size    : 1000
+    proposal_state_std  : 2
+    proposal_action_std : 2
+    random_seed         : 654321
+    noise_batch_size    : 500
     sampler             : metropolis
-    num_walkers         : 32
+    num_walkers         : 10
     initial_state       : 6.0
 
     Policy-evaluation config
     ------------------------
-    state_grid_size         : 801
-    policy_noise_batch_size : 1024
+    state_grid_size         : 2000
+    policy_noise_batch_size : 1000
     policy_noise_seed       : 123456
-    num_trajectories        : 2000
+    num_trajectories        : 1000
     horizon                 : 200
     simulation_seed         : 2026
     initial_state           : 6.0
@@ -418,14 +418,12 @@ for name, value in mdp_summary.items():
 ```
 
     Inventory MDP summary
-
-
     ---------------------
     class               : SingleProductInventoryMDP
     state bounds        : (-4.0, 12.0)
     max order           : 6.0
     discount factor     : 0.95
-    first grid actions  : [0.  0.5 1.  1.5 2.  2.5] ...
+    first grid actions  : [0.  0.1 0.2 0.3 0.4 0.5] ...
     sample demand draws : [4.48898518 1.12494111 7.09049734 5.95367792 7.04353458]
 
 
@@ -983,31 +981,31 @@ alp_results = run_polynomial_sampled_alp_example(
 ```
 
 
-    ========================================================================================================
-        seed          ALP obj      policy cost        gap %  bind constr    min slack   time (sec)
-    --------------------------------------------------------------------------------------------------------
-         111           2326.2           4893.9         52.5            3       0.0000         8.47
-    --------------------------------------------------------------------------------------------------------
-         222           2294.5           4978.5         53.9            3       0.0000         8.49
-    --------------------------------------------------------------------------------------------------------
-         333           2353.4           4207.4         44.1            3       0.0000         8.54
-    --------------------------------------------------------------------------------------------------------
-         444           2253.7           6175.1         63.5            3       0.0000         8.57
-    --------------------------------------------------------------------------------------------------------
-         555           2349.5           4327.9         45.7            3       0.0000         8.59
-    --------------------------------------------------------------------------------------------------------
-     AVERAGE           2315.5           4916.5         51.9                                   8.53
-    ========================================================================================================
+    =========================================================================================================================
+        seed          ALP obj      policy cost       diff %  bind constr    min slack   time (sec)
+    -------------------------------------------------------------------------------------------------------------------------
+         111           2304.3           4891.1         52.9            3       0.0000         7.88
+    -------------------------------------------------------------------------------------------------------------------------
+         222           2250.4           7691.1         70.7            3       0.0000         8.03
+    -------------------------------------------------------------------------------------------------------------------------
+         333           2304.7           4709.8         51.1            3       0.0000         8.08
+    -------------------------------------------------------------------------------------------------------------------------
+         444           2314.4           4503.9         48.6            3       0.0000         7.82
+    -------------------------------------------------------------------------------------------------------------------------
+         555           2277.2           5949.6         61.7            3       0.0000         7.82
+    -------------------------------------------------------------------------------------------------------------------------
+     AVERAGE           2290.2           5549.1         57.0                                   7.93
+    =========================================================================================================================
 
     Shared ALP example settings
     ---------------------------
-    sampled constraints       : 5000
-    demand samples/constraint: 2000
-    state-relevance states   : 5000
+    sampled constraints       : 3000
+    demand samples/constraint: 1000
+    state-relevance states   : 3000
     basis                    : [1, s, s^2]
-    policy lookup states     : 121
-    lookahead noise draws    : 1024
-    simulation paths         : 2000
+    policy lookup states     : 2000
+    lookahead noise draws    : 1000
+    simulation paths         : 1000
     simulation horizon       : 200
     initial state            : 6.0
 
@@ -1015,21 +1013,21 @@ alp_results = run_polynomial_sampled_alp_example(
     ------------------------------------
         seed      -4.0       0.0       4.0       8.0      12.0
     ----------------------------------------------------------
-         111       6.0       6.0       6.0       4.5       0.5
-         222       6.0       6.0       6.0       4.0       0.0
-         333       6.0       6.0       6.0       6.0       2.0
-         444       6.0       6.0       6.0       2.5       0.0
-         555       6.0       6.0       6.0       5.5       1.5
+         111       6.0       6.0       6.0       4.3       0.3
+         222       6.0       6.0       5.4       1.4       0.0
+         333       6.0       6.0       6.0       4.7       0.7
+         444       6.0       6.0       6.0       5.1       1.1
+         555       6.0       6.0       6.0       3.0       0.0
 
 
 ---
 <a id="self-adapt"></a>
-## 11. How Self-Adaptation Improves the Baseline ALP
+## 11. Self-Adaptation Improves the Baseline ALP
 
-The simple sampled-ALP implementation above illustrates the construct and optimize steps, but it does not include a genuine refinement step. The remaining notebooks show how the COR cycle can be strengthened with self-adapting methods.
+The sampled-ALP implementation above illustrates the **construct** and **optimize** steps of the COR cycle, but it does not include a genuine **refine** step. In particular, the reported `ALP obj` values are not guaranteed to be valid lower bounds on the optimal cost, because the ALP is solved only over sampled constraints rather than over the full Bellman-inequality constraint set. Consequently, the values reported in the `diff %` column, which measure the percentage difference between the simulated policy cost and the sampled-ALP objective, should not be interpreted as certified optimality gaps. For example, an average `diff %` of %57.0  does not, by itself, tell us whether the gap is large because the baseline ALP policy is poor or because the sampled objective is a weak, uncertified lower bound. This ambiguity is precisely what prevents the baseline implementation from supporting a principled refinement step. The remaining notebooks show how the COR cycle can be strengthened through self-adapting methods that improve both the optimization of the ALP and the construction of the approximation architecture.
 
-- In `continuous-mdp/notebooks/psmd.ipynb`, we present constraint violation learning. This method reformulates the ALP as a regularized saddle-point problem and uses a primal-dual first-order algorithm to learn the violation landscape during the solve. In this way, it replaces the user's choice of a constraint-sampling distribution with an endogenous distribution that focuses on difficult state-action regions.
+- In `continuous-mdp/notebooks/psmd.ipynb`, we present **constraint violation learning**. This method reformulates the ALP as a regularized saddle-point problem and uses a primal-dual first-order algorithm to learn the constraint-violation landscape during the solve. Instead of relying on uniform constraint sampling, as in the baseline ALP, the method endogenously concentrates computational effort on difficult state-action regions where Bellman violations are most informative. As shown in the notebook, this more principled treatment of ALP constraints substantially improves the upper bound relative to the baseline ALP by producing stronger policies with lower simulated costs. At the same time, it delivers certified lower bounds, and therefore meaningful optimality gaps, which the sampled baseline ALP does not provide. In this sense, constraint violation learning refines both the construction and optimization steps of the baseline ALP.
 
-- In `continuous-mdp/notebooks/self-guided-alp.ipynb`, we present self-guided approximate linear programs. This method automates the design of basis functions through random-feature sampling and refines the approximation across iterations using guiding constraints. In this way, it addresses the construct and refine stages that the baseline sampled-ALP implementation leaves open.
+- In `continuous-mdp/notebooks/self-guided-alp.ipynb`, we present **self-guided approximate linear programs**. This method automates the construction of basis functions through random-feature sampling and refines the approximation across iterations using guiding constraints. In contrast to the baseline ALP, which relies on a fixed, hand-specified set of basis functions, the self-guided approach expands and steers the approximation architecture using information revealed during computation. As shown in the notebook, this produces stronger lower bounds and lower policy costs than the baseline ALP; in the reported experiments, it also improves on constraint violation learning with fixed bases. Most of the improvement comes from using random features to substantially strengthen the lower bound, together with a constraint-violation-learning-based heuristic that converts the constraint-sampled self-guided ALP models into certified optimality gaps. Thus, self-guided ALP tightens the optimality gap by refining all three stages of the COR cycle: construction, optimization, and refinement.
 
 ---
