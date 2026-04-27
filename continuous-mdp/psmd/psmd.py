@@ -191,14 +191,32 @@ class PSMD:
 
     def _draw_uniform_state_actions(self, num_samples):
         """
-        Draw state-action pairs uniformly from the feasible rectangle.
+        Draw states uniformly and actions from the MDP's discrete action grid.
 
         Args:
             num_samples: Number of state-action pairs to draw.
         """
         states = self.rng.uniform(self.mdp.lower_state_bound, self.mdp.upper_state_bound, size=num_samples)
-        actions = self.rng.uniform(0.0, self.mdp.max_order, size=num_samples)
+        actions = self.rng.choice(self.mdp.get_discrete_actions(), size=num_samples, replace=True)
         return states.astype(float), actions.astype(float)
+
+    def _snap_actions_to_grid(self, actions):
+        """
+        Project proposed actions onto the MDP's discrete action grid.
+
+        Args:
+            actions: Continuous proposed action values.
+        """
+        action_grid = self.mdp.get_discrete_actions()
+        proposed_actions = np.asarray(actions, dtype=float).reshape(-1)
+        insertion_index = np.searchsorted(action_grid, proposed_actions, side="left")
+        right_index = np.clip(insertion_index, 0, len(action_grid) - 1)
+        left_index = np.clip(insertion_index - 1, 0, len(action_grid) - 1)
+        choose_left = np.abs(proposed_actions - action_grid[left_index]) <= np.abs(
+            proposed_actions - action_grid[right_index]
+        )
+        snapped = np.where(choose_left, action_grid[left_index], action_grid[right_index])
+        return snapped.astype(float)
 
     def _constraint_statistics(self, states, actions, noise_batch, coef):
         """
@@ -291,6 +309,7 @@ class PSMD:
                 0.0,
                 self.mdp.max_order,
             )
+            proposal_actions = self._snap_actions_to_grid(proposal_actions)
 
             prop_log_density = self._log_violation_density(proposal_states, proposal_actions, noise_batch=noise_batch)
             log_u = np.log(self.rng.uniform(size=num_points))

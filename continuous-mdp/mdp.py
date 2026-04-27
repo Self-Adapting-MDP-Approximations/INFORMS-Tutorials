@@ -486,12 +486,16 @@ class SingleProductInventoryMDP(MarkovDecisionProcess):
         """
         Sample state-action pairs for ALP constraint sampling.
 
+        States are sampled uniformly over the continuous state interval, while
+        actions are sampled uniformly from the discrete action grid.
+
         Args:
             num_samples: Number of state-action pairs to draw.
         """
 
         state_draws = self.state_sampler.rvs(size=num_samples, random_state=self.random_seed + 1)
-        action_draws = self.action_sampler.rvs(size=num_samples, random_state=self.random_seed + 2)
+        action_rng = np.random.RandomState(self.random_seed + 2)
+        action_draws = action_rng.choice(self.get_discrete_actions(), size=num_samples, replace=True)
         state_list = [np.asarray([state_draws[i]], dtype=float) for i in range(num_samples)]
         return state_list, np.asarray(action_draws, dtype=float)
 
@@ -509,13 +513,6 @@ class SingleProductInventoryMDP(MarkovDecisionProcess):
 
         state_draws = self.state_sampler.rvs(size=num_samples, random_state=self.random_seed + 3)
         samples = [np.asarray([state_draws[i]], dtype=float) for i in range(num_samples)]
-        samples.extend(
-            [
-                np.asarray([self.lower_state_bound], dtype=float),
-                np.asarray([0.0], dtype=float),
-                np.asarray([self.upper_state_bound], dtype=float),
-            ]
-        )
         return samples
 
     def get_batch_init_state(self, num_traj):
@@ -532,12 +529,11 @@ class SingleProductInventoryMDP(MarkovDecisionProcess):
         """
         Return the discrete action grid used in tutorial policy search.
         """
-        return np.arange(
-            0.0,
-            self.max_order + self.action_step,
-            self.action_step,
-            dtype=float,
-        )
+        action_grid = np.arange(0.0, self.max_order + 0.5 * self.action_step, self.action_step, dtype=float)
+        action_grid = action_grid[action_grid <= self.max_order + 1e-10]
+        if action_grid[-1] < self.max_order - 1e-10:
+            action_grid = np.append(action_grid, self.max_order)
+        return np.round(action_grid, decimals=10)
 
     def is_state_action_feasible(self, state, action):
         """
@@ -567,8 +563,8 @@ def _inventory_config_from_dict(config_dict: dict):
         mdp_name=config_dict.get("mdp_name", "Inventory"),
         discount=config_dict.get("discount", 0.95),
         random_seed=config_dict.get("random_seed", 12345),
-        lower_state_bound=config_dict.get("lower_state_bound", -10.0),
-        upper_state_bound=config_dict.get("upper_state_bound", 10.0),
+        lower_state_bound=config_dict.get("lower_state_bound", -30.0),
+        upper_state_bound=config_dict.get("upper_state_bound", 30.0),
         max_order=config_dict.get("max_order", 10.0),
         purchase_cost=config_dict.get("purchase_cost", 20.0),
         holding_cost=config_dict.get("holding_cost", 2.0),

@@ -114,20 +114,20 @@ for path in sorted((PROJECT_ROOT / 'notebooks').glob('*.ipynb')):
        helper.py
        mdp.py
        policy.py
-    
+
     Shared repository Python modules:
        basis.py
-    
+
     self_guided_alp package:
        self_guided_alp/__init__.py
        self_guided_alp/cvl_lower_bound.py
        self_guided_alp/falp.py
        self_guided_alp/sgalp.py
-    
+
     psmd package:
        psmd/__init__.py
        psmd/psmd.py
-    
+
     Notebooks:
        notebooks/how-code-works.ipynb
        notebooks/psmd.ipynb
@@ -197,7 +197,7 @@ for group_index, (group_name, config_classes) in enumerate(config_groups.items()
 
     MODEL
     =====
-    
+
     InventoryMDPConfig
     ------------------
       mdp_name
@@ -217,21 +217,21 @@ for group_index, (group_name, config_classes) in enumerate(config_groups.items()
       demand_max
       num_noise_samples
       action_step
-    
+
     BASIS AND SOLVER
     ================
-    
+
     RandomFeatureConfig
     -------------------
       bandwidth_choices
       random_seed
-    
+
     HiGHSSolverConfig
     -----------------
       method
       primal_feasibility_tolerance
       dual_feasibility_tolerance
-    
+
     GuidingConstraintConfig
     -----------------------
       num_guiding_states
@@ -239,10 +239,10 @@ for group_index, (group_name, config_classes) in enumerate(config_groups.items()
       relax_fraction
       absolute_floor
       retry_scales
-    
+
     ALGORITHMS
     ==========
-    
+
     FALPConfig
     ----------
       num_random_features
@@ -250,7 +250,7 @@ for group_index, (group_name, config_classes) in enumerate(config_groups.items()
       num_state_relevance_samples
       random_features
       solver
-    
+
     SGALPConfig
     -----------
       max_random_features
@@ -260,7 +260,7 @@ for group_index, (group_name, config_classes) in enumerate(config_groups.items()
       random_features
       guiding
       solver
-    
+
     PSMDConfig
     ----------
       num_iterations
@@ -283,10 +283,10 @@ for group_index, (group_name, config_classes) in enumerate(config_groups.items()
       snapshot_refresh_fraction
       lower_bound
       policy_evaluation
-    
+
     EVALUATION
     ==========
-    
+
     LowerBoundConfig
     ----------------
       num_mc_init_states
@@ -299,7 +299,7 @@ for group_index, (group_name, config_classes) in enumerate(config_groups.items()
       sampler
       num_walkers
       initial_state
-    
+
     PolicyEvaluationConfig
     ----------------------
       state_grid_size
@@ -319,15 +319,17 @@ A useful way to read these config classes is by purpose:
 - `GuidingConstraintConfig` stores SGALP-only settings for staged continuous-state guiding constraints.
 - `FALPConfig`, `SGALPConfig`, and `PSMDConfig` store algorithm-level settings.
 - `LowerBoundConfig` and `PolicyEvaluationConfig` store evaluation settings shared across the continuous-MDP notebooks.
+- The uppercase constants at the top of `config.py`, such as `NUM_CONSTRAINTS`, are the main edit points for shared experiment sizes.
+- `CONTINUOUS_MDP_NOTEBOOK_CONFIG` collects the experiment settings used by `how-code-works.ipynb`, `self-guided-alp.ipynb`, and `psmd.ipynb`.
 
-The helper function `make_shared_evaluation_configs(...)` is especially important because it keeps the lower-bound and policy-cost settings aligned across FALP, SGALP, and PSMD. That makes the reported comparisons reflect the algorithms rather than different evaluation choices.
+The helper function `make_shared_evaluation_configs(...)` now lives in `config.py`, so lower-bound and policy-cost settings are aligned before any notebook imports helper routines. That makes the reported comparisons reflect the algorithms rather than different evaluation choices.
 
 
 
 ```python
 from dataclasses import fields
 
-from helper import make_shared_evaluation_configs
+from config import CONTINUOUS_MDP_NOTEBOOK_CONFIG, make_shared_evaluation_configs
 
 
 def print_config(title, config):
@@ -339,7 +341,8 @@ def print_config(title, config):
         print(f'{config_field.name:<{name_width}} : {value}')
 
 
-shared_lower_bound_config, shared_policy_config = make_shared_evaluation_configs(initial_state=0.0)
+tutorial_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG
+shared_lower_bound_config, shared_policy_config = make_shared_evaluation_configs()
 
 print_config('Lower-bound evaluation config', shared_lower_bound_config)
 print()
@@ -358,8 +361,8 @@ print_config('Policy-evaluation config', shared_policy_config)
     noise_batch_size    : 1000
     sampler             : metropolis
     num_walkers         : 32
-    initial_state       : 0.0
-    
+    initial_state       : 6.0
+
     Policy-evaluation config
     ------------------------
     state_grid_size         : 801
@@ -368,7 +371,7 @@ print_config('Policy-evaluation config', shared_policy_config)
     num_trajectories        : 2000
     horizon                 : 200
     simulation_seed         : 2026
-    initial_state           : 0.0
+    initial_state           : 6.0
 
 
 ---
@@ -415,13 +418,15 @@ for name, value in mdp_summary.items():
 ```
 
     Inventory MDP summary
+
+
     ---------------------
     class               : SingleProductInventoryMDP
-    state bounds        : (-10.0, 10.0)
-    max order           : 10.0
+    state bounds        : (-4.0, 12.0)
+    max order           : 6.0
     discount factor     : 0.95
-    first grid actions  : [0. 1. 2. 3. 4. 5.] ...
-    sample demand draws : [4.13656296 2.21425206 5.62314134 4.97353024 7.89941546]
+    first grid actions  : [0.  0.5 1.  1.5 2.  2.5] ...
+    sample demand draws : [4.48898518 1.12494111 7.09049734 5.95367792 7.04353458]
 
 
 Two design choices make the rest of the continuous-MDP code simpler:
@@ -510,7 +515,7 @@ print_matrix(
        -2.00                1.0000               -0.8613                0.3997
         0.00                1.0000               -0.7257                0.2810
         3.00                1.0000               -0.4560                0.0950
-    
+
     Polynomial basis values
     -----------------------
     shape: (3, 3)
@@ -585,78 +590,78 @@ for model_class in [FALP, SelfGuidedALP, PSMD, SimpleLNSLowerBound]:
 
     FALP
     ----
-    parameter                    default        
+    parameter                    default
     ---------------------------  ---------------
-    mdp                          required       
-    config                       None           
-    num_random_features          1              
-    num_constraints              40             
-    num_state_relevance_samples  200            
-    basis_seed                   111            
+    mdp                          required
+    config                       None
+    num_random_features          1
+    num_constraints              40
+    num_state_relevance_samples  200
+    basis_seed                   111
     bandwidth_choices            (0.001, 0.0001)
-    solver                       'auto'         
-    
+    solver                       'auto'
+
     SelfGuidedALP
     -------------
-    parameter                     default              
+    parameter                     default
     ----------------------------  ---------------------
-    mdp                           required             
-    config                        None                 
-    max_random_features           10                   
-    batch_size                    1                    
-    num_constraints               40                   
-    num_state_relevance_samples   200                  
-    num_guiding_states            100                  
-    basis_seed                    111                  
-    bandwidth_choices             (0.001, 0.0001)      
-    guiding_violation             0.0                  
-    guiding_relax_fraction        0.02                 
-    guiding_abs_floor             1e-06                
+    mdp                           required
+    config                        None
+    max_random_features           10
+    batch_size                    1
+    num_constraints               40
+    num_state_relevance_samples   200
+    num_guiding_states            100
+    basis_seed                    111
+    bandwidth_choices             (0.001, 0.0001)
+    guiding_violation             0.0
+    guiding_relax_fraction        0.02
+    guiding_abs_floor             1e-06
     guiding_retry_scales          (1.0, 2.0, 5.0, 10.0)
-    highs_method                  'highs-ds'           
-    primal_feasibility_tolerance  1e-07                
-    dual_feasibility_tolerance    1e-07                
-    
+    highs_method                  'highs-ds'
+    primal_feasibility_tolerance  1e-07
+    dual_feasibility_tolerance    1e-07
+
     PSMD
     ----
-    parameter             default 
+    parameter             default
     --------------------  --------
     mdp                   required
-    config                None    
-    num_iterations        1000    
-    H                     10      
-    N                     50      
-    eval_interval         50      
-    step_size             0.2     
-    step_size_power       0.5     
-    sampler_steps         20      
-    proposal_state_std    0.8     
-    proposal_action_std   0.8     
-    sampling_temperature  25.0    
-    refresh_fraction      0.1     
-    coefficient_clip      500.0   
-    random_seed           777     
-    initial_state         5.0     
-    
+    config                None
+    num_iterations        1000
+    H                     10
+    N                     50
+    eval_interval         50
+    step_size             0.2
+    step_size_power       0.5
+    sampler_steps         20
+    proposal_state_std    0.8
+    proposal_action_std   0.8
+    sampling_temperature  25.0
+    refresh_fraction      0.1
+    coefficient_clip      500.0
+    random_seed           777
+    initial_state         5.0
+
     SimpleLNSLowerBound
     -------------------
-    parameter            default 
+    parameter            default
     -------------------  --------
     mdp                  required
     basis                required
     coef                 required
     num_random_features  required
-    num_mc_init_states   64      
-    chain_length         800     
-    burn_in              400     
-    proposal_state_std   0.8     
-    proposal_action_std  0.8     
-    random_seed          333     
-    noise_batch_size     1000    
-    sampler              'auto'  
-    num_walkers          32      
-    initial_state        5.0     
-    
+    num_mc_init_states   64
+    chain_length         800
+    burn_in              400
+    proposal_state_std   0.8
+    proposal_action_std  0.8
+    random_seed          333
+    noise_batch_size     1000
+    sampler              'auto'
+    num_walkers          32
+    initial_state        5.0
+
 
 
 A simple way to separate their responsibilities is:
@@ -721,53 +726,53 @@ for helper in [
 
     build_greedy_policy_lookup
     --------------------------
-    parameter  default 
+    parameter  default
     ---------  --------
     model      required
-    config     None    
-    
+    config     None
+
     estimate_upper_bound_fast
     -------------------------
-    parameter  default 
+    parameter  default
     ---------  --------
     model      required
-    config     None    
-    return_se  False   
-    
+    config     None
+    return_se  False
+
     estimate_actual_lower_bound_falp
     --------------------------------
-    parameter            default 
+    parameter            default
     -------------------  --------
     falp_model           required
-    num_mc_init_states   64      
-    chain_length         800     
-    burn_in              400     
-    proposal_state_std   0.8     
-    proposal_action_std  0.8     
-    random_seed          333     
-    noise_batch_size     1000    
-    sampler              'auto'  
-    num_walkers          32      
-    initial_state        5.0     
-    return_stats         False   
-    
+    num_mc_init_states   64
+    chain_length         800
+    burn_in              400
+    proposal_state_std   0.8
+    proposal_action_std  0.8
+    random_seed          333
+    noise_batch_size     1000
+    sampler              'auto'
+    num_walkers          32
+    initial_state        5.0
+    return_stats         False
+
     estimate_actual_lower_bound_sgalp
     ---------------------------------
-    parameter            default 
+    parameter            default
     -------------------  --------
     sgalp_model          required
-    num_mc_init_states   64      
-    chain_length         800     
-    burn_in              400     
-    proposal_state_std   0.8     
-    proposal_action_std  0.8     
-    random_seed          333     
-    noise_batch_size     1000    
-    sampler              'auto'  
-    num_walkers          32      
-    initial_state        5.0     
-    return_stats         False   
-    
+    num_mc_init_states   64
+    chain_length         800
+    burn_in              400
+    proposal_state_std   0.8
+    proposal_action_std  0.8
+    random_seed          333
+    noise_batch_size     1000
+    sampler              'auto'
+    num_walkers          32
+    initial_state        5.0
+    return_stats         False
+
 
 
 The evaluation story is intentionally shared across the continuous-MDP notebooks:
@@ -793,7 +798,6 @@ This lets the notebooks stay focused on the tutorial narrative: choose settings,
 helper_groups = {
     'small utilities': [
         'apply_tutorial_plot_style',
-        'make_shared_evaluation_configs',
         'evaluate_vfa_on_grid',
         'estimate_cvl_lower_bound',
     ],
@@ -828,10 +832,9 @@ for group_index, (group_name, names) in enumerate(helper_groups.items()):
     small utilities
     ---------------
       apply_tutorial_plot_style
-      make_shared_evaluation_configs
       evaluate_vfa_on_grid
       estimate_cvl_lower_bound
-    
+
     experiment runners
     ------------------
       run_falp_grid
@@ -839,7 +842,7 @@ for group_index, (group_name, names) in enumerate(helper_groups.items()):
       run_psmd_seed_grid
       run_sgalp_stage_trace
       run_falp_and_sgalp_comparison
-    
+
     plot helpers
     ------------
       plot_value_function_curves
@@ -930,16 +933,16 @@ The important code parameters are:
 | Concept | Math symbol | Code name | Value in the example | How it is used |
 | --- | --- | --- | --- | --- |
 | Polynomial basis | $\phi(s)$ | `PolynomialBasis1D(exponents=(0, 1, 2))` | `[1, s, s^2]` | Defines the VFA $V_\beta(s)=\phi(s)^\top\beta$. |
-| Demand samples per Bellman expectation | $L$ | `InventoryMDPConfig(num_noise_samples=3000)` | `3000` | `make_inventory_mdp(...)` stores this fixed demand batch in `mdp.list_demand_obs`; `get_batch_next_state(...)` and `get_expected_cost(...)` use it inside each sampled constraint. |
-| Constraint samples | $N$ | `num_constraints` | `3000` | `sample_constraint_state_actions(num_constraints)` draws the state-action pairs $(s_i,a_i)$ used as sampled Bellman constraints. |
-| State-relevance samples | $M$ | `num_state_relevance_samples` | `3000` random states plus 3 boundary/reference states | `sample_state_relevance_states(...)` builds the empirical objective coefficient `c`. The extra states are the lower bound, zero, and upper bound. |
-| Action grid spacing | none | `InventoryMDPConfig(action_step=1.0)` | `1.0` | Defines the discrete order quantities used when constructing the greedy policy. |
-| Reproducibility seed | none | `InventoryMDPConfig(random_seed=12345)` | `12345` | Controls the sampled constraints, state-relevance states, and default demand batch. |
-| Policy lookup grid | none | `PolicyEvaluationConfig(state_grid_size=121)` | `121` | Builds a grid of inventory states where greedy actions are precomputed. |
-| Demand samples for one-step lookahead | none | `policy_noise_batch_size` | `1000` | Approximates the expectation in the greedy policy decision rule. |
-| Policy simulation paths | none | `num_trajectories` | `2000` | Number of Monte Carlo trajectories used to estimate policy cost. |
-| Simulation horizon | none | `horizon` | `200` | Number of periods simulated in each trajectory. |
-| Initial state | $s_0$ | `initial_state` | `5.0` | Starting inventory level for the reported policy-cost estimate. |
+| Demand samples per Bellman expectation | $L$ | `tutorial_config.inventory.num_noise_samples` | from `config.py` | `make_inventory_mdp(...)` stores this fixed demand batch in `mdp.list_demand_obs`; `get_batch_next_state(...)` and `get_expected_cost(...)` use it inside each sampled constraint. |
+| Constraint samples | $N$ | `tutorial_config.polynomial_alp.num_constraints` | from `config.py` | `sample_constraint_state_actions(num_constraints)` draws the state-action pairs $(s_i,a_i)$ used as sampled Bellman constraints. |
+| State-relevance samples | $M$ | `tutorial_config.polynomial_alp.num_state_relevance_samples` | from `config.py` | `sample_state_relevance_states(...)` builds the empirical objective coefficient `c`. The extra states are the lower bound, zero, and upper bound. |
+| Action grid spacing | none | `tutorial_config.inventory.action_step` | from `config.py` | Defines the discrete order quantities used when constructing the greedy policy. |
+| Reproducibility seed | none | `tutorial_config.polynomial_alp.seeds` | from `config.py` | Controls the sampled constraints, state-relevance states, and default demand batch. |
+| Policy lookup grid | none | `tutorial_config.polynomial_alp.policy_grid_size` | from `config.py` | Builds a grid of inventory states where greedy actions are precomputed. |
+| Demand samples for one-step lookahead | none | `tutorial_config.policy_evaluation.policy_noise_batch_size` | from `config.py` | Approximates the expectation in the greedy policy decision rule. |
+| Policy simulation paths | none | `tutorial_config.policy_evaluation.num_trajectories` | from `config.py` | Number of Monte Carlo trajectories used to estimate policy cost. |
+| Simulation horizon | none | `tutorial_config.policy_evaluation.horizon` | from `config.py` | Number of periods simulated in each trajectory. |
+| Initial state | $s_0$ | `tutorial_config.policy_evaluation.initial_state` | from `config.py` | Starting inventory level for the reported policy-cost estimate. |
 
 In this example, the basis vector is $\phi(s)=(1,s,s^2)^\top$, so the fitted value function is $V_\beta(s)=\phi(s)^\top\beta=\beta_0+\beta_1s+\beta_2s^2$. The ideal ALP objective averages $V_\beta(s)$ under a state-relevance distribution. In the code, this expectation is replaced by an empirical average over sampled states $\bar s_1,\ldots,\bar s_M$:
 $$
@@ -966,162 +969,57 @@ Here $S'_k$ is the next inventory state generated from current state $s$, action
 
 
 ```python
-from types import SimpleNamespace
+from config import CONTINUOUS_MDP_NOTEBOOK_CONFIG
+from helper import run_polynomial_sampled_alp_example
 
-import numpy as np
-from scipy.optimize import linprog
 
-from basis import PolynomialBasis1D
-from config import InventoryMDPConfig, PolicyEvaluationConfig
-from mdp import make_inventory_mdp
-from policy import build_greedy_policy_lookup, estimate_upper_bound_fast
-
-np.set_printoptions(precision=3, suppress=True)
-
-# Example parameters collected in one place.
-DEMAND_SAMPLES_PER_CONSTRAINT = 2000
-ACTION_STEP = 1.0
-MDP_RANDOM_SEED = 111
-POLYNOMIAL_EXPONENTS = (0, 1, 2)
-NUM_CONSTRAINTS = 1000
-NUM_STATE_RELEVANCE_SAMPLES = 1000
-POLICY_GRID_SIZE = 121
-POLICY_NOISE_BATCH_SIZE = 2000
-POLICY_NOISE_SEED = 222
-NUM_POLICY_TRAJECTORIES = 2000
-POLICY_HORIZON = 200
-POLICY_SIMULATION_SEED = 333
-INITIAL_STATE = 5.0
-PROBE_STATES = np.array([-8.0, -4.0, 0.0, 4.0, 8.0])
-
-"""
-------------------------------------------------------------------------
-                                Construct
-------------------------------------------------------------------------
-Choose the MDP, the polynomial VFA, and the two sample sets.
-The fixed demand batch approximates expectations inside each constraint.
-"""
-mdp = make_inventory_mdp(
-    InventoryMDPConfig(
-        num_noise_samples=DEMAND_SAMPLES_PER_CONSTRAINT,
-        action_step=ACTION_STEP,
-        random_seed=MDP_RANDOM_SEED,
-    )
+tutorial_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG
+alp_results = run_polynomial_sampled_alp_example(
+    example_config=tutorial_config.polynomial_alp,
+    inventory_config=tutorial_config.inventory,
+    policy_config=tutorial_config.policy_evaluation,
 )
-basis = PolynomialBasis1D(exponents=POLYNOMIAL_EXPONENTS)
-
-state_samples, action_samples = mdp.sample_constraint_state_actions(NUM_CONSTRAINTS)
-relevance_states = mdp.sample_state_relevance_states(NUM_STATE_RELEVANCE_SAMPLES)
-
-# Construct A beta <= b, where each row is one sampled Bellman inequality.
-constraint_rows = []
-rhs_values = []
-for state, action in zip(state_samples, action_samples):
-    phi_state = basis.eval_basis(state)
-    next_states = mdp.get_batch_next_state(state, action)
-
-    expected_phi_next = basis.expected_basis(next_states)
-    expected_cost = mdp.get_expected_cost(state, action)
-
-    constraint_rows.append(phi_state - mdp.discount * expected_phi_next)
-    rhs_values.append(expected_cost)
-
-A = np.asarray(constraint_rows, dtype=float)
-b = np.asarray(rhs_values, dtype=float)
-
-# Construct objective coefficient c as the average basis vector over relevance states.
-c = np.mean([basis.eval_basis(state) for state in relevance_states], axis=0)
-
-"""
-------------------------------------------------------------------------
-                                Optimize
-------------------------------------------------------------------------
-linprog minimizes, so maximizing c^T beta becomes minimizing -c^T beta.
-"""
-result = linprog(c=-c, A_ub=A, b_ub=b, bounds=[(None, None)] * len(c), method='highs')
-if not result.success:
-    raise RuntimeError(result.message)
-
-coef = np.asarray(result.x, dtype=float)
-alp_objective = float(c @ coef)
-sampled_slacks = b - A @ coef
-min_sampled_slack = 0.0 if abs(sampled_slacks.min()) < 1e-8 else float(sampled_slacks.min())
-
-## Wrap the fitted VFA and evaluate its induced greedy policy.
-alp_model = SimpleNamespace(mdp=mdp, basis=basis, coef=coef, num_random_features=len(POLYNOMIAL_EXPONENTS) - 1)
-policy_config = PolicyEvaluationConfig(
-    state_grid_size=POLICY_GRID_SIZE,
-    policy_noise_batch_size=POLICY_NOISE_BATCH_SIZE,
-    policy_noise_seed=POLICY_NOISE_SEED,
-    num_trajectories=NUM_POLICY_TRAJECTORIES,
-    horizon=POLICY_HORIZON,
-    simulation_seed=POLICY_SIMULATION_SEED,
-    initial_state=INITIAL_STATE,
-)
-policy_cost, policy_se = estimate_upper_bound_fast(alp_model, config=policy_config, return_se=True)
-state_grid, policy_actions = build_greedy_policy_lookup(alp_model, config=policy_config)
-probe_actions = [policy_actions[np.abs(state_grid - state).argmin()] for state in PROBE_STATES]
-
-def print_metric(label, value):
-    print(f'{label:<27}: {value}')
-
-
-print('-' * 100)
-print('Polynomial sampled ALP result')
-print('-' * 100)
-print_metric('status', result.message)
-print_metric('sampled constraints', NUM_CONSTRAINTS)
-print_metric('demand samples/constraint', mdp.num_noise_samples)
-print_metric('state-relevance states', len(relevance_states))
-print_metric('basis', '[1, s, s^2]')
-print_metric('coefficients', coef)
-print_metric('ALP objective', f'{alp_objective:,.2f}')
-print_metric('min sampled slack', f'{min_sampled_slack:.4f}')
-print_metric('binding constraints', int((sampled_slacks <= 1e-6).sum()))
-print()
-print('Greedy policy from fitted VFA')
-print('-' * 100)
-print_metric('initial state', policy_config.initial_state)
-print_metric('policy lookup states', policy_config.state_grid_size)
-print_metric('lookahead noise draws', policy_config.policy_noise_batch_size)
-print_metric('simulation paths', policy_config.num_trajectories)
-print_metric('simulation horizon', policy_config.horizon)
-print_metric('simulated policy cost', f'{policy_cost:,.2f} ± {1.96 * policy_se:,.2f} (95% MC error)')
-print('sample actions')
-for state, action in zip(PROBE_STATES, probe_actions):
-    print(f'  state {state:5.1f} -> order {action:4.1f}')
-print('-' * 100)
 
 ```
 
-    ----------------------------------------------------------------------------------------------------
-    Polynomial sampled ALP result
-    ----------------------------------------------------------------------------------------------------
-    status                     : Optimization terminated successfully. (HiGHS Status 7: Optimal)
-    sampled constraints        : 1000
-    demand samples/constraint  : 2000
-    state-relevance states     : 1003
-    basis                      : [1, s, s^2]
-    coefficients               : [2160.203  -20.001    0.   ]
-    ALP objective              : 2,162.27
-    min sampled slack          : 0.0000
-    binding constraints        : 3
-    
-    Greedy policy from fitted VFA
-    ----------------------------------------------------------------------------------------------------
-    initial state              : 5.0
-    policy lookup states       : 121
-    lookahead noise draws      : 2000
-    simulation paths           : 2000
-    simulation horizon         : 200
-    simulated policy cost      : 2,047.30 ± 5.51 (95% MC error)
-    sample actions
-      state  -8.0 -> order 10.0
-      state  -4.0 -> order 10.0
-      state   0.0 -> order  6.0
-      state   4.0 -> order  2.0
-      state   8.0 -> order  0.0
-    ----------------------------------------------------------------------------------------------------
+
+    ========================================================================================================
+        seed          ALP obj      policy cost        gap %  bind constr    min slack   time (sec)
+    --------------------------------------------------------------------------------------------------------
+         111           2326.2           4893.9         52.5            3       0.0000         8.47
+    --------------------------------------------------------------------------------------------------------
+         222           2294.5           4978.5         53.9            3       0.0000         8.49
+    --------------------------------------------------------------------------------------------------------
+         333           2353.4           4207.4         44.1            3       0.0000         8.54
+    --------------------------------------------------------------------------------------------------------
+         444           2253.7           6175.1         63.5            3       0.0000         8.57
+    --------------------------------------------------------------------------------------------------------
+         555           2349.5           4327.9         45.7            3       0.0000         8.59
+    --------------------------------------------------------------------------------------------------------
+     AVERAGE           2315.5           4916.5         51.9                                   8.53
+    ========================================================================================================
+
+    Shared ALP example settings
+    ---------------------------
+    sampled constraints       : 5000
+    demand samples/constraint: 2000
+    state-relevance states   : 5000
+    basis                    : [1, s, s^2]
+    policy lookup states     : 121
+    lookahead noise draws    : 1024
+    simulation paths         : 2000
+    simulation horizon       : 200
+    initial state            : 6.0
+
+    Greedy policy sample actions by seed
+    ------------------------------------
+        seed      -4.0       0.0       4.0       8.0      12.0
+    ----------------------------------------------------------
+         111       6.0       6.0       6.0       4.5       0.5
+         222       6.0       6.0       6.0       4.0       0.0
+         333       6.0       6.0       6.0       6.0       2.0
+         444       6.0       6.0       6.0       2.5       0.0
+         555       6.0       6.0       6.0       5.5       1.5
 
 
 ---
@@ -1130,8 +1028,8 @@ print('-' * 100)
 
 The simple sampled-ALP implementation above illustrates the construct and optimize steps, but it does not include a genuine refinement step. The remaining notebooks show how the COR cycle can be strengthened with self-adapting methods.
 
-- In [psmd.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/continuous-mdp/notebooks/psmd.ipynb), we present constraint violation learning. This method reformulates the ALP as a regularized saddle-point problem and uses a primal-dual first-order algorithm to learn the violation landscape during the solve. In this way, it replaces the user's choice of a constraint-sampling distribution with an endogenous distribution that focuses on difficult state-action regions.
+- In `continuous-mdp/notebooks/psmd.ipynb`, we present constraint violation learning. This method reformulates the ALP as a regularized saddle-point problem and uses a primal-dual first-order algorithm to learn the violation landscape during the solve. In this way, it replaces the user's choice of a constraint-sampling distribution with an endogenous distribution that focuses on difficult state-action regions.
 
-- In [self-guided-alp.ipynb](https://github.com/Self-Adapting-MDP-Approximations/INFORMS-Tutorial/blob/main/continuous-mdp/notebooks/self-guided-alp.ipynb), we present self-guided approximate linear programs. This method automates the design of basis functions through random-feature sampling and refines the approximation across iterations using guiding constraints. In this way, it addresses the construct and refine stages that the baseline sampled-ALP implementation leaves open.
+- In `continuous-mdp/notebooks/self-guided-alp.ipynb`, we present self-guided approximate linear programs. This method automates the design of basis functions through random-feature sampling and refines the approximation across iterations using guiding constraints. In this way, it addresses the construct and refine stages that the baseline sampled-ALP implementation leaves open.
 
 ---

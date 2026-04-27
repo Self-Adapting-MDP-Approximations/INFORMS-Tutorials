@@ -23,6 +23,7 @@ import time
 from types import SimpleNamespace
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.optimize import linprog
 
 from psmd.psmd import PSMD
 from self_guided_alp.cvl_lower_bound import estimate_actual_lower_bound_falp, estimate_actual_lower_bound_sgalp
@@ -32,12 +33,16 @@ from policy import build_greedy_policy_lookup as _build_greedy_policy_lookup
 from policy import estimate_upper_bound_fast
 from self_guided_alp.sgalp import SelfGuidedALP
 from config import (
+    CONTINUOUS_MDP_NOTEBOOK_CONFIG,
     FALPConfig,
+    InventoryMDPConfig,
     LowerBoundConfig,
+    PolynomialALPExampleConfig,
     PolicyEvaluationConfig,
     PSMDConfig,
     RandomFeatureConfig,
     SGALPConfig,
+    make_shared_evaluation_configs,
 )
 
 
@@ -51,6 +56,29 @@ def estimate_falp_objective(falp_model):
     return falp_model.get_falp_objective()
 
 
+def estimate_psmd_alp_objective(psmd_model, num_state_relevance_samples=None):
+    """
+    Estimate the ALP objective induced by the averaged PSMD value approximation.
+
+    Args:
+        psmd_model: Fitted PSMD model.
+        num_state_relevance_samples: Number of states used to approximate
+            E_nu[V(s)].
+    """
+    default_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.polynomial_alp
+    num_state_relevance_samples = (
+        default_config.num_state_relevance_samples
+        if num_state_relevance_samples is None
+        else num_state_relevance_samples
+    )
+    relevance_states = psmd_model.mdp.sample_state_relevance_states(num_state_relevance_samples)
+    basis_matrix = psmd_model.basis.eval_basis_batch(
+        relevance_states,
+        num_random_features=psmd_model.num_random_features,
+    )
+    return float(np.mean(basis_matrix @ psmd_model.avg_coef))
+
+
 def apply_tutorial_plot_style():
     """
     Apply a single plotting style used across the tutorial notebooks.
@@ -59,49 +87,14 @@ def apply_tutorial_plot_style():
     plt.rcParams.update(
         {
             "figure.dpi": 120,
-            "figure.titlesize": 18,
-            "axes.titlesize": 16,
-            "axes.labelsize": 14,
+            "figure.titlesize": 12,
+            "axes.titlesize": 12,
+            "axes.labelsize": 12,
             "legend.fontsize": 12,
             "xtick.labelsize": 12,
             "ytick.labelsize": 12,
         }
     )
-
-
-def make_shared_evaluation_configs(
-    initial_state: float = 0.0,
-    lower_bound_sampler: str = "metropolis",
-):
-    """
-    Build lower-bound and policy configs shared across the tutorial notebooks.
-
-    Args:
-        initial_state: Initial inventory level used in both evaluations.
-        lower_bound_sampler: Lower-bound sampler backend used in all notebooks.
-    """
-    lower_bound_config = LowerBoundConfig(
-        num_mc_init_states=32,
-        chain_length=2000,
-        burn_in=500,
-        proposal_state_std=0.8,
-        proposal_action_std=0.8,
-        random_seed=333,
-        noise_batch_size=1000,
-        sampler=lower_bound_sampler,
-        num_walkers=32,
-        initial_state=initial_state,
-    )
-    policy_config = PolicyEvaluationConfig(
-        state_grid_size=801,
-        policy_noise_batch_size=1024,
-        policy_noise_seed=123456,
-        num_trajectories=2000,
-        horizon=200,
-        simulation_seed=2026,
-        initial_state=initial_state,
-    )
-    return lower_bound_config, policy_config
 
 
 def _format_table_value(value, width=16, precision=1):
@@ -169,18 +162,392 @@ def evaluate_vfa_on_grid(model, grid):
     )
 
 
+def _polynomial_basis_vector(state):
+    """
+    Evaluate the quadratic polynomial basis [1, s, s^2].
+
+    Args:
+        state: One-dimensional inventory state.
+    """
+    state_value = float(np.asarray(state, dtype=float).reshape(-1)[0])
+    return np.asarray([1.0, state_value, state_value**2], dtype=float)
+
+
+def fit_representative_quadratic_inventory_alp(
+    mdp,
+    num_constraints=None,
+    num_state_relevance_samples=None,
+    representative_linear_coef=10.0,
+    representative_quadratic_coef=-4.0,
+):
+    """
+    Fit a small sampled ALP and return a representative quadratic beta.
+
+    The sampled ALP gives a reasonable coefficient scale. The returned
+    heat-map beta keeps the fitted constant term, then sets representative
+    linear and quadratic terms so the illustrative threshold surface displays
+    the nonlinear structure discussed in the tutorial text.
+
+    Args:
+        mdp: Inventory MDP instance.
+        num_constraints: Number of sampled Bellman inequalities.
+        num_state_relevance_samples: Number of sampled objective states.
+        representative_linear_coef: Linear coefficient used in the
+            illustrative heat-map beta.
+        representative_quadratic_coef: Quadratic coefficient used in the
+            illustrative heat-map beta.
+    """
+    default_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.polynomial_alp
+    num_constraints = default_config.num_constraints if num_constraints is None else num_constraints
+    num_state_relevance_samples = (
+        default_config.num_state_relevance_samples
+        if num_state_relevance_samples is None
+        else num_state_relevance_samples
+    )
+
+    state_samples, action_samples = mdp.sample_constraint_state_actions(num_constraints)
+    relevance_states = mdp.sample_state_relevance_states(num_state_relevance_samples)
+
+    constraint_rows = []
+    rhs_values = []
+    for state, action in zip(state_samples, action_samples):
+        phi_state = _polynomial_basis_vector(state)
+        next_states = mdp.get_batch_next_state(state, action)
+        expected_phi_next = np.mean(
+            np.column_stack(
+                [
+                    np.ones(len(next_states)),
+                    np.asarray(next_states, dtype=float).reshape(-1),
+                    np.asarray(next_states, dtype=float).reshape(-1) ** 2,
+                ]
+            ),
+            axis=0,
+        )
+        expected_cost = mdp.get_expected_cost(state, action)
+        constraint_rows.append(phi_state - mdp.discount * expected_phi_next)
+        rhs_values.append(expected_cost)
+
+    A = np.asarray(constraint_rows, dtype=float)
+    b = np.asarray(rhs_values, dtype=float)
+    c = np.mean([_polynomial_basis_vector(state) for state in relevance_states], axis=0)
+
+    result = linprog(c=-c, A_ub=A, b_ub=b, bounds=[(None, None)] * len(c), method="highs")
+    if not result.success:
+        raise RuntimeError(result.message)
+
+    alp_beta = np.asarray(result.x, dtype=float)
+    sampled_slacks = b - A @ alp_beta
+    beta = alp_beta.copy()
+    beta[1] = representative_linear_coef
+    beta[2] = representative_quadratic_coef
+
+    return SimpleNamespace(
+        result=result,
+        beta=beta,
+        alp_beta=alp_beta,
+        alp_objective=float(c @ alp_beta),
+        sampled_slacks=sampled_slacks,
+        num_constraints=num_constraints,
+        num_state_relevance_samples=len(relevance_states),
+    )
+
+
+def evaluate_inventory_constraint_threshold(mdp, beta, state_mesh, action_mesh, chunk_size=500):
+    """
+    Evaluate f(beta; s, a) on a state-action mesh for the inventory MDP.
+
+    Args:
+        mdp: Inventory MDP instance.
+        beta: Quadratic VFA coefficient vector [beta_0, beta_1, beta_2].
+        state_mesh: Meshgrid of inventory states.
+        action_mesh: Meshgrid of order quantities.
+        chunk_size: Number of state-action pairs evaluated per vectorized call.
+    """
+    states = np.asarray(state_mesh, dtype=float).reshape(-1)
+    actions = np.asarray(action_mesh, dtype=float).reshape(-1)
+    values = np.empty_like(states, dtype=float)
+
+    beta_1 = float(beta[1])
+    beta_2 = float(beta[2])
+    demand_batch = mdp.list_demand_obs
+
+    for start in range(0, len(states), chunk_size):
+        end = min(start + chunk_size, len(states))
+        batch_states = states[start:end]
+        batch_actions = actions[start:end]
+
+        summary = mdp.evaluate_state_action_batch(batch_states, batch_actions, demand_batch)
+        next_states = summary["next_states"]
+        expected_cost = summary["expected_cost"]
+        expected_next_state = next_states.mean(axis=1)
+        expected_next_state_squared = (next_states**2).mean(axis=1)
+
+        linear_term = batch_states - mdp.discount * expected_next_state
+        quadratic_term = batch_states**2 - mdp.discount * expected_next_state_squared
+        values[start:end] = (
+            expected_cost
+            - beta_1 * linear_term
+            - beta_2 * quadratic_term
+        ) / (1.0 - mdp.discount)
+
+    return values.reshape(np.asarray(state_mesh).shape)
+
+
+def make_inventory_violation_plot_data(
+    inventory_config: InventoryMDPConfig | None = None,
+    num_constraints=None,
+    num_state_relevance_samples=None,
+    representative_linear_coef=None,
+    representative_quadratic_coef=None,
+    state_grid_size=None,
+    action_grid_size=None,
+):
+    """
+    Build all data needed for the inventory threshold and Gibbs-density plots.
+
+    Args:
+        inventory_config: Inventory configuration used to build the MDP.
+        num_constraints: Number of sampled ALP constraints.
+        num_state_relevance_samples: Number of sampled objective states.
+        representative_linear_coef: Linear beta used in the heat map.
+        representative_quadratic_coef: Quadratic beta used in the heat map.
+        state_grid_size: Number of state grid points.
+        action_grid_size: Number of action grid points.
+    """
+    config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.inventory if inventory_config is None else inventory_config
+    default_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.polynomial_alp
+    default_policy_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.policy_evaluation
+    num_constraints = default_config.num_constraints if num_constraints is None else num_constraints
+    num_state_relevance_samples = (
+        default_config.num_state_relevance_samples
+        if num_state_relevance_samples is None
+        else num_state_relevance_samples
+    )
+    representative_linear_coef      = 2 if representative_linear_coef is None else representative_linear_coef
+    representative_quadratic_coef   = -5.0 if representative_quadratic_coef is None else representative_quadratic_coef
+    state_grid_size = default_policy_config.state_grid_size if state_grid_size is None else state_grid_size
+    action_grid_size = default_policy_config.state_grid_size if action_grid_size is None else action_grid_size
+
+    mdp = make_inventory_mdp(config)
+    fit = fit_representative_quadratic_inventory_alp(
+        mdp,
+        num_constraints=num_constraints,
+        num_state_relevance_samples=num_state_relevance_samples,
+        representative_linear_coef=representative_linear_coef,
+        representative_quadratic_coef=representative_quadratic_coef,
+    )
+
+    state_grid = np.linspace(mdp.lower_state_bound, mdp.upper_state_bound, state_grid_size)
+    action_grid = np.linspace(0.0, mdp.max_order, action_grid_size)
+    state_mesh, action_mesh = np.meshgrid(state_grid, action_grid)
+    threshold_values = evaluate_inventory_constraint_threshold(mdp, fit.beta, state_mesh, action_mesh)
+    min_index = np.unravel_index(np.argmin(threshold_values), threshold_values.shape)
+
+    return SimpleNamespace(
+        mdp=mdp,
+        fit=fit,
+        beta=fit.beta,
+        alp_beta=fit.alp_beta,
+        state_grid=state_grid,
+        action_grid=action_grid,
+        state_mesh=state_mesh,
+        action_mesh=action_mesh,
+        threshold_values=threshold_values,
+        min_index=min_index,
+        min_state=float(state_mesh[min_index]),
+        min_action=float(action_mesh[min_index]),
+        min_value=float(threshold_values[min_index]),
+        contour_levels=np.quantile(
+            threshold_values,
+            [0.01, 0.05, 0.10, 0.20, 0.35, 0.50, 0.65, 0.80, 0.90, 0.95],
+        ),
+    )
+
+
+def gibbs_density_on_grid(function_values, lambda_value, state_grid, action_grid):
+    """
+    Approximate the Gibbs density y*_{lambda,beta} on a rectangular grid.
+
+    Args:
+        function_values: Grid of f(beta; s, a) values.
+        lambda_value: Positive KL-regularization parameter.
+        state_grid: One-dimensional state grid.
+        action_grid: One-dimensional action grid.
+    """
+    shifted_values = np.asarray(function_values, dtype=float) - np.min(function_values)
+    unnormalized_density = np.exp(-shifted_values / float(lambda_value))
+    action_integral = np.trapezoid(unnormalized_density, action_grid, axis=0)
+    normalizing_constant = np.trapezoid(action_integral, state_grid)
+    return unnormalized_density / normalizing_constant
+
+
+def plot_inventory_constraint_threshold_heatmap(
+    plot_data,
+    figsize=(12, 3.5),
+    fontsize=12,
+    cmap="viridis",
+):
+    """
+    Plot the inventory ALP constraint-threshold heat map.
+
+    Args:
+        plot_data: Output from `make_inventory_violation_plot_data`.
+        figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
+        cmap: Matplotlib colormap name.
+    """
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "mathtext.fontset": "cm",
+            "axes.unicode_minus": False,
+        }
+    )
+    fig, ax = plt.subplots(figsize=figsize)
+
+    heatmap = ax.pcolormesh(
+        plot_data.state_mesh,
+        plot_data.action_mesh,
+        plot_data.threshold_values,
+        shading="auto",
+        cmap=cmap,
+    )
+    contours = ax.contour(
+        plot_data.state_mesh,
+        plot_data.action_mesh,
+        plot_data.threshold_values,
+        levels=plot_data.contour_levels,
+        colors="white",
+        linewidths=0.8,
+        alpha=0.9,
+    )
+    ax.clabel(contours, inline=True, fontsize=fontsize, fmt="%.0f")
+    ax.contour(
+        plot_data.state_mesh,
+        plot_data.action_mesh,
+        plot_data.threshold_values,
+        levels=plot_data.contour_levels[:3],
+        colors="black",
+        linewidths=1.2,
+    )
+    ax.scatter(
+        [plot_data.min_state],
+        [plot_data.min_action],
+        color="red",
+        edgecolor="white",
+        linewidth=0.8,
+        s=55,
+        label=r"$\min_{s,a} f(\beta;s,a)$",
+    )
+
+    colorbar = fig.colorbar(heatmap, ax=ax)
+    colorbar.set_label(r"$f(\beta; s, a)$", fontsize=fontsize)
+    colorbar.ax.tick_params(labelsize=fontsize)
+
+    ax.set_title(r"Constraint threshold $f(\beta;s,a)$", fontsize=fontsize)
+    ax.set_xlabel(r"Inventory state $s$", fontsize=fontsize)
+    ax.set_ylabel(r"Order quantity $a$", fontsize=fontsize)
+    ax.set_xlim(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound)
+    ax.set_ylim(0.0, plot_data.mdp.max_order)
+    ax.tick_params(labelsize=fontsize)
+    ax.legend(loc="lower right", frameon=True, fontsize=fontsize)
+    fig.tight_layout()
+    plt.show()
+    return fig, ax
+
+
+def plot_inventory_gibbs_densities(
+    plot_data,
+    lambda_values=(50.0, 100.0, 200.0),
+    figsize=(12, 3.5),
+    fontsize=12,
+    cmap="viridis",
+):
+    """
+    Plot Gibbs densities for several KL-regularization values.
+
+    Args:
+        plot_data: Output from `make_inventory_violation_plot_data`.
+        lambda_values: KL-regularization values to display.
+        figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
+        cmap: Matplotlib colormap name.
+    """
+    densities = [
+        gibbs_density_on_grid(
+            plot_data.threshold_values,
+            lambda_value,
+            plot_data.state_grid,
+            plot_data.action_grid,
+        )
+        for lambda_value in lambda_values
+    ]
+    density_max = max(float(density.max()) for density in densities)
+
+    fig, axes = plt.subplots(
+        1,
+        len(lambda_values),
+        figsize=figsize,
+        sharex=True,
+        sharey=True,
+        constrained_layout=True,
+    )
+    axes = np.asarray(axes).reshape(-1)
+
+    image = None
+    for ax, lambda_value, density in zip(axes, lambda_values, densities):
+        image = ax.pcolormesh(
+            plot_data.state_mesh,
+            plot_data.action_mesh,
+            density,
+            shading="auto",
+            cmap=cmap,
+            vmin=0.0,
+            vmax=density_max,
+        )
+        ax.contour(
+            plot_data.state_mesh,
+            plot_data.action_mesh,
+            plot_data.threshold_values,
+            levels=plot_data.contour_levels,
+            colors="white",
+            linewidths=0.5,
+            alpha=0.9,
+        )
+        ax.scatter(
+            [plot_data.min_state],
+            [plot_data.min_action],
+            color="orange",
+            edgecolor="orange",
+            linewidth=0.6,
+            s=40,
+        )
+        ax.set_title(rf"$\lambda = {lambda_value:,.0f}$", fontsize=fontsize)
+        ax.set_xlabel(r"Inventory state $s$", fontsize=fontsize)
+        ax.set_xlim(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound)
+        ax.set_ylim(0.0, plot_data.mdp.max_order)
+        ax.tick_params(labelsize=fontsize)
+
+    axes[0].set_ylabel(r"Order quantity $a$", fontsize=fontsize)
+    colorbar = fig.colorbar(image, ax=axes, location="right", shrink=0.9)
+    colorbar.set_label(r"$y^*_{\lambda,\beta}(s,a)$", fontsize=fontsize)
+    colorbar.ax.tick_params(labelsize=fontsize)
+    plt.show()
+    return fig, axes, densities
+
+
 def estimate_cvl_lower_bound(
     falp_model,
-    num_mc_init_states=32,
-    chain_length=600,
-    burn_in=300,
-    proposal_state_std=0.8,
-    proposal_action_std=0.8,
-    random_seed=333,
-    noise_batch_size=1000,
-    sampler="auto",
-    num_walkers=32,
-    initial_state=5.0,
+    num_mc_init_states=None,
+    chain_length=None,
+    burn_in=None,
+    proposal_state_std=None,
+    proposal_action_std=None,
+    random_seed=None,
+    noise_batch_size=None,
+    sampler=None,
+    num_walkers=None,
+    initial_state=None,
     config: LowerBoundConfig | None = None,
 ):
     """
@@ -201,27 +568,28 @@ def estimate_cvl_lower_bound(
         config: Optional grouped lower-bound settings.
     """
 
+    default_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.lower_bound
     lower_bound_config = _make_lower_bound_config(
         config=config,
-        num_mc_init_states=num_mc_init_states,
-        chain_length=chain_length,
-        burn_in=burn_in,
-        proposal_state_std=proposal_state_std,
-        proposal_action_std=proposal_action_std,
-        random_seed=random_seed,
-        noise_batch_size=noise_batch_size,
-        sampler=sampler,
-        num_walkers=num_walkers,
-        initial_state=initial_state,
+        num_mc_init_states=default_config.num_mc_init_states if num_mc_init_states is None else num_mc_init_states,
+        chain_length=default_config.chain_length if chain_length is None else chain_length,
+        burn_in=default_config.burn_in if burn_in is None else burn_in,
+        proposal_state_std=default_config.proposal_state_std if proposal_state_std is None else proposal_state_std,
+        proposal_action_std=default_config.proposal_action_std if proposal_action_std is None else proposal_action_std,
+        random_seed=default_config.random_seed if random_seed is None else random_seed,
+        noise_batch_size=default_config.noise_batch_size if noise_batch_size is None else noise_batch_size,
+        sampler=default_config.sampler if sampler is None else sampler,
+        num_walkers=default_config.num_walkers if num_walkers is None else num_walkers,
+        initial_state=default_config.initial_state if initial_state is None else initial_state,
     )
     return estimate_actual_lower_bound_falp(falp_model, **lower_bound_config.to_kwargs())
 
 
 def build_greedy_policy_lookup(
     model,
-    state_grid_size=801,
-    policy_noise_batch_size=128,
-    policy_noise_seed=123456,
+    state_grid_size=None,
+    policy_noise_batch_size=None,
+    policy_noise_seed=None,
     config: PolicyEvaluationConfig | None = None,
 ):
     """
@@ -236,28 +604,29 @@ def build_greedy_policy_lookup(
         config: Optional grouped policy-evaluation settings.
     """
 
+    default_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.policy_evaluation
     policy_config = _make_policy_config(
         config=config,
-        state_grid_size=state_grid_size,
-        policy_noise_batch_size=policy_noise_batch_size,
-        policy_noise_seed=policy_noise_seed,
-        num_trajectories=500,
-        horizon=1000,
-        simulation_seed=2026,
-        initial_state=5.0,
+        state_grid_size=default_config.state_grid_size if state_grid_size is None else state_grid_size,
+        policy_noise_batch_size=default_config.policy_noise_batch_size if policy_noise_batch_size is None else policy_noise_batch_size,
+        policy_noise_seed=default_config.policy_noise_seed if policy_noise_seed is None else policy_noise_seed,
+        num_trajectories=default_config.num_trajectories,
+        horizon=default_config.horizon,
+        simulation_seed=default_config.simulation_seed,
+        initial_state=default_config.initial_state,
     )
     return _build_greedy_policy_lookup(model, config=policy_config)
 
 
 def estimate_upper_bound_falp_fast(
     falp_model,
-    num_trajectories=500,
-    horizon=1000,
+    num_trajectories=None,
+    horizon=None,
     sim_seed=2026,
     simulation_seed=None,
-    state_grid_size=2000,
-    policy_noise_batch_size=128,
-    initial_state=5.0,
+    state_grid_size=None,
+    policy_noise_batch_size=None,
+    initial_state=None,
     return_se=False,
     config: PolicyEvaluationConfig | None = None,
 ):
@@ -280,17 +649,232 @@ def estimate_upper_bound_falp_fast(
     if simulation_seed is not None:
         sim_seed = simulation_seed
 
+    default_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.policy_evaluation
     policy_config = _make_policy_config(
         config=config,
-        state_grid_size=state_grid_size,
-        policy_noise_batch_size=policy_noise_batch_size,
+        state_grid_size=default_config.state_grid_size if state_grid_size is None else state_grid_size,
+        policy_noise_batch_size=default_config.policy_noise_batch_size if policy_noise_batch_size is None else policy_noise_batch_size,
         policy_noise_seed=sim_seed + 500000,
-        num_trajectories=num_trajectories,
-        horizon=horizon,
+        num_trajectories=default_config.num_trajectories if num_trajectories is None else num_trajectories,
+        horizon=default_config.horizon if horizon is None else horizon,
         simulation_seed=sim_seed,
-        initial_state=initial_state,
+        initial_state=default_config.initial_state if initial_state is None else initial_state,
     )
     return estimate_upper_bound_fast(falp_model, config=policy_config, return_se=return_se)
+
+
+def run_polynomial_sampled_alp_example(
+    seeds=None,
+    demand_samples_per_constraint=None,
+    action_step=None,
+    polynomial_exponents=None,
+    num_constraints=None,
+    num_state_relevance_samples=None,
+    policy_grid_size=None,
+    policy_noise_batch_size=None,
+    num_policy_trajectories=None,
+    policy_horizon=None,
+    initial_state=None,
+    probe_states=None,
+    example_config: PolynomialALPExampleConfig | None = None,
+    inventory_config: InventoryMDPConfig | None = None,
+    policy_config: PolicyEvaluationConfig | None = None,
+):
+    """
+    Run the tutorial's small polynomial sampled-ALP example across seeds.
+
+    This helper keeps the `how-code-works.ipynb` example readable while still
+    exposing the full construct-optimize-evaluate workflow through its
+    parameter list and printed summary table.
+
+    Args:
+        seeds: Random seeds controlling sampled constraints, relevance states,
+            demand batches, lookahead samples, and simulation paths.
+        demand_samples_per_constraint: Demand draws used in each Bellman
+            expectation approximation.
+        action_step: Discrete action-grid spacing used by policy lookup.
+        polynomial_exponents: Exponents defining the polynomial VFA basis.
+        num_constraints: Number of sampled Bellman inequalities.
+        num_state_relevance_samples: Number of sampled objective states before
+            boundary/reference states are added.
+        policy_grid_size: Number of states in the greedy-policy lookup grid.
+        policy_noise_batch_size: Demand draws used for one-step lookahead.
+        num_policy_trajectories: Number of simulated policy-evaluation paths.
+        policy_horizon: Number of periods simulated in each path.
+        initial_state: Initial inventory state for policy evaluation.
+        probe_states: States at which to report greedy actions.
+    """
+    example_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.polynomial_alp if example_config is None else example_config
+    inventory_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.inventory if inventory_config is None else inventory_config
+    policy_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.policy_evaluation if policy_config is None else policy_config
+
+    seeds = example_config.seeds if seeds is None else seeds
+    demand_samples_per_constraint = (
+        inventory_config.num_noise_samples
+        if demand_samples_per_constraint is None
+        else demand_samples_per_constraint
+    )
+    action_step = inventory_config.action_step if action_step is None else action_step
+    polynomial_exponents = (
+        example_config.polynomial_exponents
+        if polynomial_exponents is None
+        else polynomial_exponents
+    )
+    num_constraints = example_config.num_constraints if num_constraints is None else num_constraints
+    num_state_relevance_samples = (
+        example_config.num_state_relevance_samples
+        if num_state_relevance_samples is None
+        else num_state_relevance_samples
+    )
+    policy_grid_size = example_config.policy_grid_size if policy_grid_size is None else policy_grid_size
+    policy_noise_batch_size = (
+        policy_config.policy_noise_batch_size
+        if policy_noise_batch_size is None
+        else policy_noise_batch_size
+    )
+    num_policy_trajectories = (
+        policy_config.num_trajectories
+        if num_policy_trajectories is None
+        else num_policy_trajectories
+    )
+    policy_horizon = policy_config.horizon if policy_horizon is None else policy_horizon
+    initial_state = policy_config.initial_state if initial_state is None else initial_state
+    probe_states = example_config.probe_states if probe_states is None else probe_states
+    probe_states = np.asarray(probe_states, dtype=float)
+
+    def solve_one_seed(seed):
+        start_time = time.time()
+        mdp = make_inventory_mdp(
+            inventory_config.with_updates(
+                num_noise_samples=demand_samples_per_constraint,
+                action_step=action_step,
+                random_seed=seed,
+            )
+        )
+
+        from basis import PolynomialBasis1D
+
+        basis = PolynomialBasis1D(exponents=polynomial_exponents)
+        state_samples, action_samples = mdp.sample_constraint_state_actions(num_constraints)
+        relevance_states = mdp.sample_state_relevance_states(num_state_relevance_samples)
+
+        constraint_rows = []
+        rhs_values = []
+        for state, action in zip(state_samples, action_samples):
+            phi_state = basis.eval_basis(state)
+            next_states = mdp.get_batch_next_state(state, action)
+            expected_phi_next = basis.expected_basis(next_states)
+            expected_cost = mdp.get_expected_cost(state, action)
+            constraint_rows.append(phi_state - mdp.discount * expected_phi_next)
+            rhs_values.append(expected_cost)
+
+        A = np.asarray(constraint_rows, dtype=float)
+        b = np.asarray(rhs_values, dtype=float)
+        c = np.mean([basis.eval_basis(state) for state in relevance_states], axis=0)
+
+        result = linprog(c=-c, A_ub=A, b_ub=b, bounds=[(None, None)] * len(c), method="highs")
+        if not result.success:
+            raise RuntimeError(result.message)
+
+        coef = np.asarray(result.x, dtype=float)
+        alp_objective = float(c @ coef)
+        sampled_slacks = b - A @ coef
+        min_sampled_slack = 0.0 if abs(sampled_slacks.min()) < 1e-8 else float(sampled_slacks.min())
+
+        alp_model = SimpleNamespace(
+            mdp=mdp,
+            basis=basis,
+            coef=coef,
+            num_random_features=len(polynomial_exponents) - 1,
+        )
+        policy_config = PolicyEvaluationConfig(
+            state_grid_size=policy_grid_size,
+            policy_noise_batch_size=policy_noise_batch_size,
+            policy_noise_seed=seed + 510000,
+            num_trajectories=num_policy_trajectories,
+            horizon=policy_horizon,
+            simulation_seed=seed + 10000,
+            initial_state=initial_state,
+        )
+        policy_cost, policy_se = estimate_upper_bound_fast(alp_model, config=policy_config, return_se=True)
+        state_grid, policy_actions = _build_greedy_policy_lookup(alp_model, config=policy_config)
+        probe_actions = [policy_actions[np.abs(state_grid - state).argmin()] for state in probe_states]
+        elapsed_time = time.time() - start_time
+
+        return {
+            "seed": seed,
+            "status": result.message,
+            "coef": coef,
+            "alp_objective": alp_objective,
+            "policy_cost": policy_cost,
+            "policy_se": policy_se,
+            "gap": _compute_optimality_gap(alp_objective, policy_cost),
+            "runtime_sec": elapsed_time,
+            "min_sampled_slack": min_sampled_slack,
+            "binding_constraints": int((sampled_slacks <= 1e-6).sum()),
+            "num_relevance_states": len(relevance_states),
+            "probe_actions": probe_actions,
+        }
+
+    rows = [solve_one_seed(seed) for seed in seeds]
+
+    mean_alp_objective = np.mean([row["alp_objective"] for row in rows])
+    mean_policy_cost = np.mean([row["policy_cost"] for row in rows])
+    mean_gap = np.mean([row["gap"] for row in rows])
+    mean_runtime = np.mean([row["runtime_sec"] for row in rows])
+
+    table_width = 121
+    print()
+    print("=" * table_width)
+    print(
+        f"{'seed':>8} {'ALP obj':>16} {'policy cost':>16} "
+        f"{'diff %':>12} {'bind constr':>12} {'min slack':>12} {'time (sec)':>12}"
+    )
+    print("-" * table_width)
+    for row in rows:
+        print(
+            f"{row['seed']:8d} "
+            f"{_format_table_value(row['alp_objective'], width=16, precision=1)} "
+            f"{_format_table_value(row['policy_cost'], width=16, precision=1)} "
+            f"{_format_table_value(row['gap'], width=12, precision=1)} "
+            f"{row['binding_constraints']:12d} "
+            f"{row['min_sampled_slack']:12.4f} "
+            f"{row['runtime_sec']:12.2f}"
+        )
+        print("-" * table_width)
+    print(
+        f"{'AVERAGE':>8} "
+        f"{_format_table_value(mean_alp_objective, width=16, precision=1)} "
+        f"{_format_table_value(mean_policy_cost, width=16, precision=1)} "
+        f"{_format_table_value(mean_gap, width=12, precision=1)} "
+        f"{'':>12} "
+        f"{'':>12} "
+        f"{mean_runtime:12.2f}"
+    )
+    print("=" * table_width)
+    print()
+    print("Shared ALP example settings")
+    print("---------------------------")
+    print(f"sampled constraints       : {num_constraints}")
+    print(f"demand samples/constraint: {demand_samples_per_constraint}")
+    print(f"state-relevance states   : {rows[0]['num_relevance_states']}")
+    print("basis                    : [1, s, s^2]")
+    print(f"policy lookup states     : {policy_grid_size}")
+    print(f"lookahead noise draws    : {policy_noise_batch_size}")
+    print(f"simulation paths         : {num_policy_trajectories}")
+    print(f"simulation horizon       : {policy_horizon}")
+    print(f"initial state            : {initial_state}")
+    print()
+    print("Greedy policy sample actions by seed")
+    print("------------------------------------")
+    header = "seed".rjust(8) + "".join([f"{state:>10.1f}" for state in probe_states])
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        action_text = "".join([f"{action:>10.1f}" for action in row["probe_actions"]])
+        print(f"{row['seed']:8d}{action_text}")
+
+    return rows
 
 
 def moving_average_smoother(x, y, window_size=81):
@@ -318,23 +902,24 @@ def moving_average_smoother(x, y, window_size=81):
 
 def run_falp_grid(
     feature_counts,
-    seeds=(111,),
-    num_constraints=200,
-    num_state_relevance_samples=200,
-    bandwidth_choices=(1e-3, 1e-4),
+    seeds=None,
+    num_constraints=None,
+    num_state_relevance_samples=None,
+    bandwidth_choices=None,
     compute_upper_bound=True,
-    lower_bound_num_mc_init_states=1000,
-    lower_bound_burn_in=200,
-    lower_bound_noise_batch_size=128,
-    lower_bound_sampler="auto",
-    lower_bound_num_walkers=32,
-    lower_bound_chain_length=600,
-    upper_bound_num_trajectories=2000,
-    upper_bound_horizon=100,
+    lower_bound_num_mc_init_states=None,
+    lower_bound_burn_in=None,
+    lower_bound_noise_batch_size=None,
+    lower_bound_sampler=None,
+    lower_bound_num_walkers=None,
+    lower_bound_chain_length=None,
+    upper_bound_num_trajectories=None,
+    upper_bound_horizon=None,
     lower_bound_num_mc_samples=None,
     falp_config: FALPConfig | None = None,
     lower_bound_config: LowerBoundConfig | None = None,
     policy_config: PolicyEvaluationConfig | None = None,
+    inventory_config: InventoryMDPConfig | None = None,
 ):
     """
     Fit FALP once for each (#features, seed) pair and cache the outputs.
@@ -369,6 +954,50 @@ def run_falp_grid(
     if lower_bound_num_mc_samples is not None:
         lower_bound_num_mc_init_states = lower_bound_num_mc_samples
 
+    seeds = CONTINUOUS_MDP_NOTEBOOK_CONFIG.seeds if seeds is None else seeds
+    inventory_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.inventory if inventory_config is None else inventory_config
+    default_falp_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.falp
+    num_constraints = default_falp_config.num_constraints if num_constraints is None else num_constraints
+    num_state_relevance_samples = (
+        default_falp_config.num_state_relevance_samples
+        if num_state_relevance_samples is None
+        else num_state_relevance_samples
+    )
+    bandwidth_choices = (
+        default_falp_config.random_features.bandwidth_choices
+        if bandwidth_choices is None
+        else bandwidth_choices
+    )
+    default_policy_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.policy_evaluation
+    default_lower_bound_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.lower_bound
+    lower_bound_num_mc_init_states = (
+        default_lower_bound_config.num_mc_init_states
+        if lower_bound_num_mc_init_states is None
+        else lower_bound_num_mc_init_states
+    )
+    lower_bound_burn_in = default_lower_bound_config.burn_in if lower_bound_burn_in is None else lower_bound_burn_in
+    lower_bound_noise_batch_size = (
+        default_lower_bound_config.noise_batch_size
+        if lower_bound_noise_batch_size is None
+        else lower_bound_noise_batch_size
+    )
+    lower_bound_sampler = default_lower_bound_config.sampler if lower_bound_sampler is None else lower_bound_sampler
+    lower_bound_num_walkers = (
+        default_lower_bound_config.num_walkers
+        if lower_bound_num_walkers is None
+        else lower_bound_num_walkers
+    )
+    lower_bound_chain_length = (
+        default_lower_bound_config.chain_length
+        if lower_bound_chain_length is None
+        else lower_bound_chain_length
+    )
+    upper_bound_num_trajectories = (
+        default_policy_config.num_trajectories
+        if upper_bound_num_trajectories is None
+        else upper_bound_num_trajectories
+    )
+    upper_bound_horizon = default_policy_config.horizon if upper_bound_horizon is None else upper_bound_horizon
     results = {}
 
     base_falp_config = _make_falp_config(
@@ -376,32 +1005,32 @@ def run_falp_grid(
         num_random_features=1,
         num_constraints=num_constraints,
         num_state_relevance_samples=num_state_relevance_samples,
-        basis_seed=111,
+        basis_seed=default_falp_config.random_features.random_seed,
         bandwidth_choices=bandwidth_choices,
-        solver="auto",
+        solver=default_falp_config.solver,
     )
     base_lower_bound_config = _make_lower_bound_config(
         config=lower_bound_config,
         num_mc_init_states=lower_bound_num_mc_init_states,
         chain_length=lower_bound_chain_length,
         burn_in=lower_bound_burn_in,
-        proposal_state_std=0.8,
-        proposal_action_std=0.8,
-        random_seed=333,
+        proposal_state_std=default_lower_bound_config.proposal_state_std,
+        proposal_action_std=default_lower_bound_config.proposal_action_std,
+        random_seed=default_lower_bound_config.random_seed,
         noise_batch_size=lower_bound_noise_batch_size,
         sampler=lower_bound_sampler,
         num_walkers=lower_bound_num_walkers,
-        initial_state=5.0,
+        initial_state=default_lower_bound_config.initial_state,
     )
     base_policy_config = _make_policy_config(
         config=policy_config,
-        state_grid_size=801,
-        policy_noise_batch_size=1024,
-        policy_noise_seed=123456,
+        state_grid_size=default_policy_config.state_grid_size,
+        policy_noise_batch_size=default_policy_config.policy_noise_batch_size,
+        policy_noise_seed=default_policy_config.policy_noise_seed,
         num_trajectories=upper_bound_num_trajectories,
         horizon=upper_bound_horizon,
-        simulation_seed=2026,
-        initial_state=5.0,
+        simulation_seed=default_policy_config.simulation_seed,
+        initial_state=default_policy_config.initial_state,
     )
 
     def fmt(value, width=16, precision=1):
@@ -415,16 +1044,21 @@ def run_falp_grid(
         """
         return _format_table_value(value, width=width, precision=precision)
 
-    table_width = 104
+    table_width = 138
 
     print("=" * table_width)
     print(
         f"{'seed':>8} {'# features':>12} "
-        f"{'FALP obj':>16} {'CVL lower bound':>18} {'policy cost':>16} {'opt gap %':>12} {'time (sec)':>12}"
+        f"{'FALP obj':>16} {'CVL lb':>16} {'policy cost':>16} "
+        f"{'best lb':>16} {'best ub':>16} {'opt gap %':>12} {'time (sec)':>12}"
     )
     print("-" * table_width)
 
     for seed in seeds:
+        best_lower_bound = None
+        best_upper_bound = None
+        best_gap = None
+
         for m in feature_counts:
             if m not in results:
                 results[m] = {}
@@ -444,12 +1078,18 @@ def run_falp_grid(
                 """
                 elapsed_time = time.time() - start_time
                 policy_cost_str = fmt(upper_bound, width=16, precision=1) if upper_bound is not None else f"{'...':>16}"
-                gap_str = fmt(gap, width=12, precision=1) if gap is not None else f"{'...':>12}"
+                best_lb_str = (
+                    fmt(best_lower_bound, width=16, precision=1) if best_lower_bound is not None else f"{'...':>16}"
+                )
+                best_ub_str = (
+                    fmt(best_upper_bound, width=16, precision=1) if best_upper_bound is not None else f"{'...':>16}"
+                )
+                gap_str = fmt(best_gap, width=12, precision=1) if best_gap is not None else f"{'...':>12}"
                 print(
                     f"{seed:8d} {m:12d} "
                     f"{fmt(falp_objective, width=16, precision=1)} "
-                    f"{fmt(cvl_lower_bound, width=18, precision=1)} "
-                    f"{policy_cost_str} {gap_str} {elapsed_time:12.2f}",
+                    f"{fmt(cvl_lower_bound, width=16, precision=1)} "
+                    f"{policy_cost_str} {best_lb_str} {best_ub_str} {gap_str} {elapsed_time:12.2f}",
                     end=end,
                     flush=True,
                 )
@@ -461,7 +1101,7 @@ def run_falp_grid(
                 random_features=base_falp_config.random_features.with_updates(random_seed=seed),
             )
             model = FALP(
-                mdp=make_inventory_mdp(),
+                mdp=make_inventory_mdp(inventory_config),
                 config=model_config,
             )
             solution = model.fit()
@@ -471,6 +1111,11 @@ def run_falp_grid(
 
             lb_config = base_lower_bound_config.with_updates(random_seed=seed + 20000)
             cvl_lower_bound = estimate_cvl_lower_bound(model, config=lb_config)
+            best_lower_bound = (
+                cvl_lower_bound
+                if best_lower_bound is None
+                else max(best_lower_bound, cvl_lower_bound)
+            )
             print_progress()
 
             if compute_upper_bound:
@@ -479,8 +1124,14 @@ def run_falp_grid(
                     simulation_seed=seed + 10000,
                 )
                 upper_bound = estimate_upper_bound_fast(model, config=ub_config)
+                best_upper_bound = (
+                    upper_bound
+                    if best_upper_bound is None
+                    else min(best_upper_bound, upper_bound)
+                )
+                best_gap = _compute_optimality_gap(best_lower_bound, best_upper_bound)
                 print_progress()
-                gap = _compute_optimality_gap(cvl_lower_bound, upper_bound)
+                gap = best_gap
 
             elapsed_time = time.time() - start_time
 
@@ -490,6 +1141,8 @@ def run_falp_grid(
                 "falp_objective": falp_objective,
                 "lower_bound": cvl_lower_bound,
                 "upper_bound": upper_bound,
+                "best_lower_bound": best_lower_bound,
+                "best_upper_bound": best_upper_bound,
                 "gap": gap,
                 "runtime_sec": elapsed_time,
             }
@@ -568,13 +1221,26 @@ def plot_value_function_curves(
     feature_counts,
     seeds,
     algorithm_name,
+    comparison_results_dict=None,
+    comparison_feature_counts=None,
+    comparison_seeds=None,
+    comparison_algorithm_name=None,
     grid_size=300,
     colormap="viridis",
+    comparison_colormap=None,
     objective_color="#2a6f97",
-    figsize=(16, 6),
+    figsize=(12, 3.5),
+    fontsize=12,
+    plot_seed=None,
+    comparison_plot_seed=None,
 ):
     """
     Plot representative value-function curves and mean objective values.
+
+    When `comparison_results_dict` is provided, the figure instead compares
+    value-function curves for two methods side by side. This mode is used for
+    the FALP-versus-SGALP VFA comparison after both experiment grids have been
+    computed.
 
     Args:
         results_dict: Nested dictionary returned by `run_falp_grid` or
@@ -582,12 +1248,77 @@ def plot_value_function_curves(
         feature_counts: Feature counts to include in the figure.
         seeds: Random seeds included in `results_dict`.
         algorithm_name: Label used in plot titles, such as `FALP` or `SGALP`.
+        comparison_results_dict: Optional second result dictionary to compare
+            against `results_dict`.
+        comparison_feature_counts: Feature counts for the comparison results.
+            Defaults to `feature_counts`.
+        comparison_seeds: Seeds for the comparison results. Defaults to
+            `seeds`.
+        comparison_algorithm_name: Label for the comparison method.
         grid_size: Number of states used in the plotting grid.
         colormap: Matplotlib colormap name used for the value curves.
+        comparison_colormap: Colormap for the comparison value curves.
         objective_color: Line color used for the objective summary plot.
         figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
+        plot_seed: Seed used for the representative value-function curves.
+        comparison_plot_seed: Seed used for the comparison curves.
     """
-    plot_seed = seeds[0]
+    if plot_seed is None:
+        plot_seed = seeds[0]
+
+    def _plot_vfa_panel(ax, result_set, counts, seed, label, cmap_name):
+        representative_model = result_set[counts[0]][seed]["model"]
+        grid = np.linspace(
+            representative_model.mdp.lower_state_bound,
+            representative_model.mdp.upper_state_bound,
+            grid_size,
+        )
+        colors = plt.get_cmap(cmap_name)(np.linspace(0.15, 0.9, len(counts)))
+
+        for color, feature_count in zip(colors, counts):
+            model = result_set[feature_count][seed]["model"]
+            values = evaluate_vfa_on_grid(model, grid)
+            shift = max(0.0, 1.0 - np.min(values))
+            log_values = np.log(values + shift)
+            curve_label = f"N = {feature_count}" + (f" (shift={shift:.2f})" if shift > 0 else "")
+            ax.plot(grid, log_values, linewidth=2.3, color=color, label=curve_label)
+
+        ax.axvline(0.0, color="gray", linestyle="--", linewidth=1)
+        ax.set(
+            xlabel="State s",
+            ylabel=r"Log value function approximation",
+        )
+        ax.tick_params(labelsize=fontsize)
+        ax.legend(ncol=2, fontsize=fontsize)
+        return grid
+
+    if comparison_results_dict is not None:
+        comparison_feature_counts = feature_counts if comparison_feature_counts is None else comparison_feature_counts
+        comparison_seeds = seeds if comparison_seeds is None else comparison_seeds
+        comparison_algorithm_name = (
+            "Comparison"
+            if comparison_algorithm_name is None
+            else comparison_algorithm_name
+        )
+        comparison_colormap = colormap if comparison_colormap is None else comparison_colormap
+        if comparison_plot_seed is None:
+            comparison_plot_seed = comparison_seeds[0]
+
+        fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
+        _plot_vfa_panel(axes[0], results_dict, feature_counts, plot_seed, algorithm_name, colormap)
+        _plot_vfa_panel(
+            axes[1],
+            comparison_results_dict,
+            comparison_feature_counts,
+            comparison_plot_seed,
+            comparison_algorithm_name,
+            comparison_colormap,
+        )
+        plt.tight_layout()
+        plt.show()
+        return
+
     representative_model = results_dict[feature_counts[0]][plot_seed]["model"]
     grid = np.linspace(
         representative_model.mdp.lower_state_bound,
@@ -609,16 +1340,17 @@ def plot_value_function_curves(
         shift = max(0.0, 1.0 - np.min(values))
         log_values = np.log(values + shift)
 
-        label = f"m = {feature_count}" + (f" (shift={shift:.2f})" if shift > 0 else "")
+        label = f"N = {feature_count}" + (f" (shift={shift:.2f})" if shift > 0 else "")
         axes[0].plot(grid, log_values, linewidth=2.3, color=color, label=label)
 
     axes[0].axvline(0.0, color="gray", linestyle="--", linewidth=1)
     axes[0].set(
         xlabel="State s",
-        ylabel=r"$\log(\hat V(s) + \mathrm{shift})$",
-        title=f"{algorithm_name} Value Functions on a Log Scale (seed = {plot_seed})",
+        ylabel=r"Log value function approximation",
+        # title=f"{algorithm_name} Value Functions on a Log Scale (seed = {plot_seed})",
     )
     axes[0].legend(ncol=2)
+    axes[0].tick_params(labelsize=fontsize)
 
     axes[1].plot(
         feature_counts,
@@ -633,6 +1365,7 @@ def plot_value_function_curves(
         ylabel=f"Mean {algorithm_name} Objective Value",
         title=f"Average {algorithm_name} Objective vs. Basis Size",
     )
+    axes[1].tick_params(labelsize=fontsize)
 
     plt.tight_layout()
     plt.show()
@@ -643,7 +1376,8 @@ def plot_bound_boxplots(
     feature_counts,
     seeds,
     algorithm_name,
-    figsize=(16, 6),
+    figsize=(12, 3.5),
+    fontsize=12,
 ):
     """
     Plot lower bounds, upper bounds, and optimality gaps across seeds.
@@ -654,6 +1388,7 @@ def plot_bound_boxplots(
         seeds: Random seeds included in `results_dict`.
         algorithm_name: Label used in plot titles, such as `FALP` or `SGALP`.
         figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
     """
     lower_bound_results, upper_bound_results, gap_results = extract_boxplot_stats(results_dict, feature_counts, seeds)
 
@@ -697,7 +1432,8 @@ def plot_bound_boxplots(
         ylabel="Bound Value",
         title=f"{algorithm_name} Lower and Upper Bounds Across Random Seeds",
     )
-    axes[0].legend()
+    axes[0].tick_params(labelsize=fontsize)
+    axes[0].legend(fontsize=fontsize)
 
     axes[1].plot(positions, gap_means, "o--", linewidth=1.8, markersize=7, color="black", label="Mean optimality gap")
     axes[1].set(
@@ -705,8 +1441,81 @@ def plot_bound_boxplots(
         ylabel="Optimality Gap (%)",
         title=f"{algorithm_name} Optimality Gap Across Random Seeds",
     )
-    axes[1].legend()
+    axes[1].tick_params(labelsize=fontsize)
+    axes[1].legend(fontsize=fontsize)
 
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_falp_vs_sgalp_bound_boxplots(
+    falp_results,
+    sgalp_results,
+    feature_counts,
+    seeds,
+    figsize=(12, 3.5),
+    fontsize=12,
+):
+    """
+    Plot FALP and SGALP lower/upper bound boxplots side by side.
+
+    This comparison intentionally reuses the same boxplot configuration as
+    `plot_bound_boxplots`: visible plus-sign outliers, hidden medians,
+    min-to-max black line overlays, and the same lower/upper bound colors.
+
+    Args:
+        falp_results: Nested dictionary returned by `run_falp_grid`.
+        sgalp_results: Nested dictionary returned by `run_sgalp_grid`.
+        feature_counts: Feature or stage counts to include in display order.
+        seeds: Random seeds included in both result dictionaries.
+        figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
+    boxplot_kwargs = _boxplot_style_kwargs()
+    positions = np.arange(1, len(feature_counts) + 1)
+
+    for ax, results, title in [
+        (axes[0], falp_results, "FALP bounds"),
+        (axes[1], sgalp_results, "SGALP bounds"),
+    ]:
+        lower_bound_results, upper_bound_results, _ = extract_boxplot_stats(results, feature_counts, seeds)
+        lb_data = [lower_bound_results[m] for m in feature_counts]
+        ub_data = [upper_bound_results[m] for m in feature_counts]
+        lb_means = [np.mean(values) for values in lb_data]
+        ub_means = [np.mean(values) for values in ub_data]
+
+        bp_lb = ax.boxplot(lb_data, positions=positions, widths=0.3, manage_ticks=False, **boxplot_kwargs)
+        bp_ub = ax.boxplot(ub_data, positions=positions, widths=0.3, manage_ticks=False, **boxplot_kwargs)
+
+        _draw_boxplot_min_max_lines(ax, positions, lb_data)
+        _draw_boxplot_min_max_lines(ax, positions, ub_data)
+
+        for median in bp_lb["medians"] + bp_ub["medians"]:
+            median.set_visible(False)
+        for patch in bp_lb["boxes"]:
+            patch.set_facecolor("#9bd0f5")
+        for patch in bp_ub["boxes"]:
+            patch.set_facecolor("#f7a072")
+
+        ax.plot(positions, lb_means, "o--", linewidth=1.8, markersize=6, color="#1565c0", label="Mean lower bound")
+        ax.plot(positions, ub_means, "o--", linewidth=1.8, markersize=6, color="#d9480f", label="Mean upper bound")
+        ax.set(
+            xticks=positions,
+            xticklabels=[str(m) for m in feature_counts],
+            xlabel="Number of basis functions",
+            # title=title,
+        )
+        ax.tick_params(labelsize=fontsize)
+        ax.grid(axis="y", alpha=0.25)
+        ax.legend(
+            [bp_lb["boxes"][0], bp_ub["boxes"][0]],
+            ["Lower bound", "Upper bound"],
+            loc="best",
+            fontsize=fontsize,
+        )
+
+    axes[0].set_ylabel("Estimated discounted cost", fontsize=fontsize)
     plt.tight_layout()
     plt.show()
 
@@ -715,7 +1524,8 @@ def plot_psmd_iteration_diagnostics(
     psmd_results,
     seeds,
     min_iteration=200,
-    figsize=(15, 6),
+    figsize=(12, 3.5),
+    fontsize=12,
 ):
     """
     Plot PSMD lower-bound and policy-cost traces across seeds.
@@ -725,6 +1535,7 @@ def plot_psmd_iteration_diagnostics(
         seeds: Random seeds to include in the multi-seed comparison.
         min_iteration: Earliest iteration shown on the x-axis.
         figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
     """
     histories_by_seed = {
         seed: [row for row in psmd_results[seed]["solution"]["history"] if row["iteration"] >= min_iteration]
@@ -794,8 +1605,14 @@ def plot_psmd_iteration_diagnostics(
         ylabel="Value",
         title="(a) Bounds at the Current Evaluated Iterate",
     )
+    axes[0].tick_params(labelsize=fontsize)
     axes[0].grid(alpha=0.25)
-    axes[0].legend([bp_current_lb["boxes"][0], bp_current_pc["boxes"][0]], ["PSMD lower bound", "PSMD policy cost"], loc="lower right")
+    axes[0].legend(
+        [bp_current_lb["boxes"][0], bp_current_pc["boxes"][0]],
+        ["PSMD lower bound", "PSMD policy cost"],
+        loc="lower right",
+        fontsize=fontsize,
+    )
 
     axes[1].set(
         xticks=iterations,
@@ -803,14 +1620,15 @@ def plot_psmd_iteration_diagnostics(
         xlabel="Iteration",
         title="(b) Best Historical Bounds",
     )
+    axes[1].tick_params(labelsize=fontsize)
     axes[1].grid(alpha=0.25)
-    axes[1].legend([bp_best_lb["boxes"][0], bp_best_pc["boxes"][0]], ["PSMD lower bound", "PSMD policy cost"], loc="lower right")
-
-    fig.suptitle(
-        "PSMD Lower Bound and Policy Cost Across Iterations and Seeds",
-        fontsize=15,
-        y=1.02,
+    axes[1].legend(
+        [bp_best_lb["boxes"][0], bp_best_pc["boxes"][0]],
+        ["PSMD lower bound", "PSMD policy cost"],
+        loc="lower right",
+        fontsize=fontsize,
     )
+
     plt.tight_layout()
     plt.show()
 
@@ -819,7 +1637,8 @@ def plot_psmd_acceptance_and_value(
     psmd_result,
     plot_seed,
     grid_size=300,
-    figsize=(15, 5),
+    figsize=(12, 3.5),
+    fontsize=12,
 ):
     """
     Plot PSMD sampler acceptance rates and the final averaged value curve.
@@ -829,6 +1648,7 @@ def plot_psmd_acceptance_and_value(
         plot_seed: Seed label shown in the titles.
         grid_size: Number of states used in the value-function grid.
         figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
     """
     solver = psmd_result["model"]
     solution = psmd_result["solution"]
@@ -863,6 +1683,7 @@ def plot_psmd_acceptance_and_value(
         title=f"MH Sampler Acceptance Rate (seed = {plot_seed})",
     )
     axes[0].set_ylim(0.0, 1.0)
+    axes[0].tick_params(labelsize=fontsize)
 
     axes[1].plot(state_grid, vfa_values, color="#5b2c6f", linewidth=2.5)
     axes[1].axvline(0.0, color="gray", linestyle="--", linewidth=1)
@@ -871,6 +1692,7 @@ def plot_psmd_acceptance_and_value(
         ylabel=r"$\hat V(s)$",
         title=f"Final Averaged PSMD Value Approximation (seed = {plot_seed})",
     )
+    axes[1].tick_params(labelsize=fontsize)
 
     plt.tight_layout()
     plt.show()
@@ -879,9 +1701,10 @@ def plot_psmd_acceptance_and_value(
 def plot_psmd_sampling_snapshots(
     psmd_result,
     plot_seed,
-    ncols=5,
+    ncols=6,
     offset=0.5,
-    figsize=(16, 7),
+    figsize=(12, 3.5),
+    fontsize=12,
 ):
     """
     Plot the PSMD state-action sampler cloud at stored iterations.
@@ -889,9 +1712,10 @@ def plot_psmd_sampling_snapshots(
     Args:
         psmd_result: One seed entry from `run_psmd_seed_grid`.
         plot_seed: Seed label shown in the title.
-        ncols: Number of subplot columns.
+        ncols: Number of one-row snapshot panels to show.
         offset: Extra margin added around the feasible state-action rectangle.
         figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
     """
     solver = psmd_result["model"]
     solution = psmd_result["solution"]
@@ -900,9 +1724,9 @@ def plot_psmd_sampling_snapshots(
         for iteration in solver.config.snapshot_iterations
         if iteration in solution["state_action_snapshots"]
     ]
+    snapshot_iterations = snapshot_iterations[:ncols]
 
-    nrows = int(np.ceil(len(snapshot_iterations) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, ncols, figsize=figsize, sharex=True, sharey=True)
     axes = np.asarray(axes).reshape(-1)
 
     for ax, iteration in zip(axes, snapshot_iterations):
@@ -915,27 +1739,27 @@ def plot_psmd_sampling_snapshots(
             alpha=0.5,
             edgecolors="none",
         )
-        ax.set_title(f"Iteration {iteration:,}")
-        ax.set_xlim(-offset + solver.mdp.lower_state_bound, offset + solver.mdp.upper_state_bound)
+        ax.set_title(f"Iteration {iteration:,}", fontsize=fontsize)
+        ax.set_xlim(solver.mdp.lower_state_bound - offset, solver.mdp.upper_state_bound + offset)
         ax.set_ylim(-offset + 0.0, offset + solver.mdp.max_order)
-        ax.set_xlabel("State")
-        ax.set_ylabel("Action")
+        ax.set_xlabel("State", fontsize=fontsize)
+        ax.tick_params(labelsize=fontsize)
+        ax.grid(True, alpha=0.3)
+
+    if snapshot_iterations:
+        axes[0].set_ylabel("Action", fontsize=fontsize)
 
     for ax in axes[len(snapshot_iterations):]:
         ax.axis("off")
 
-    fig.suptitle(
-        f"State-Action Sampling Distribution Learned by PSMD (seed = {plot_seed})",
-        fontsize=16,
-        y=1.02,
-    )
     plt.tight_layout()
     plt.show()
 
 
 def run_psmd_seed_grid(
-    seeds=(111,),
+    seeds=None,
     psmd_config: PSMDConfig | None = None,
+    inventory_config: InventoryMDPConfig | None = None,
     verbose=True,
 ):
     """
@@ -951,6 +1775,8 @@ def run_psmd_seed_grid(
         verbose: Whether to print progress tables during optimization.
     """
 
+    seeds = CONTINUOUS_MDP_NOTEBOOK_CONFIG.seeds if seeds is None else seeds
+    inventory_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.inventory if inventory_config is None else inventory_config
     base_psmd_config = _make_psmd_config(config=psmd_config)
     results = {}
 
@@ -978,7 +1804,7 @@ def run_psmd_seed_grid(
         )
 
         start_time = time.time()
-        model = PSMD(mdp=make_inventory_mdp(), config=run_config)
+        model = PSMD(mdp=make_inventory_mdp(inventory_config), config=run_config)
         solution = model.run(
             verbose=verbose,
             show_header=(index == 0),
@@ -989,11 +1815,13 @@ def run_psmd_seed_grid(
         best_lower_bound = history[-1]["best_lower_bound"]
         best_policy_cost = history[-1]["best_policy_cost"]
         best_gap = _compute_optimality_gap(best_lower_bound, best_policy_cost)
+        alp_objective = estimate_psmd_alp_objective(model)
         elapsed_time = time.time() - start_time
 
         results[seed] = {
             "model": model,
             "solution": solution,
+            "alp_objective": alp_objective,
             "current_lower_bound": final_row["lower_bound"],
             "current_upper_bound": final_row["policy_cost"],
             "best_lower_bound": best_lower_bound,
@@ -1005,40 +1833,33 @@ def run_psmd_seed_grid(
             "runtime_sec": elapsed_time,
         }
 
-    mean_current_lb = np.mean([results[seed]["current_lower_bound"] for seed in seeds])
-    mean_current_ub = np.mean([results[seed]["current_upper_bound"] for seed in seeds])
-    mean_best_lb = np.mean([results[seed]["best_lower_bound"] for seed in seeds])
-    mean_best_ub = np.mean([results[seed]["best_upper_bound"] for seed in seeds])
-    mean_best_gap = np.mean([results[seed]["best_gap"] for seed in seeds])
-    mean_runtime = np.mean([results[seed]["runtime_sec"] for seed in seeds])
+    # mean_current_lb = np.mean([results[seed]["current_lower_bound"] for seed in seeds])
+    # mean_current_ub = np.mean([results[seed]["current_upper_bound"] for seed in seeds])
+    # mean_alp_objective = np.mean([results[seed]["alp_objective"] for seed in seeds])
+    # mean_best_lb = np.mean([results[seed]["best_lower_bound"] for seed in seeds])
+    # mean_best_ub = np.mean([results[seed]["best_upper_bound"] for seed in seeds])
+    # mean_best_gap = np.mean([results[seed]["best_gap"] for seed in seeds])
+    # mean_runtime = np.mean([results[seed]["runtime_sec"] for seed in seeds])
 
-    print()
-    print("=" * table_width)
-    print(
-        f"{'seed':>8} {'current lb':>16} {'current ub':>16} "
-        f"{'best lb':>16} {'best ub':>16} {'best gap %':>12} {'time (sec)':>12}"
-    )
-    print("-" * table_width)
-    for seed in seeds:
-        print(
-            f"{seed:8d} "
-            f"{fmt(results[seed]['current_lower_bound'], width=16, precision=1)} "
-            f"{fmt(results[seed]['current_upper_bound'], width=16, precision=1)} "
-            f"{fmt(results[seed]['best_lower_bound'], width=16, precision=1)} "
-            f"{fmt(results[seed]['best_upper_bound'], width=16, precision=1)} "
-            f"{fmt(results[seed]['best_gap'], width=12, precision=1)} "
-            f"{results[seed]['runtime_sec']:12.2f}"
-        )
-        print("-" * table_width)
-    print(
-        f"{'AVERAGE':>8} "
-        f"{fmt(mean_current_lb, width=16, precision=1)} "
-        f"{fmt(mean_current_ub, width=16, precision=1)} "
-        f"{fmt(mean_best_lb, width=16, precision=1)} "
-        f"{fmt(mean_best_ub, width=16, precision=1)} "
-        f"{fmt(mean_best_gap, width=12, precision=1)} "
-        f"{mean_runtime:12.2f}"
-    )
+    # print()
+    # print("=" * table_width)
+    # print(
+    #     f"{'seed':>8} {'ALP obj':>16} {'current lb':>16} {'current ub':>16} "
+    #     f"{'best lb':>16} {'best ub':>16} {'best gap %':>12} {'time (sec)':>12}"
+    # )
+    # print("-" * table_width)
+    # for seed in seeds:
+    #     print(
+    #         f"{seed:8d} "
+    #         f"{fmt(results[seed]['alp_objective'], width=16, precision=1)} "
+    #         f"{fmt(results[seed]['current_lower_bound'], width=16, precision=1)} "
+    #         f"{fmt(results[seed]['current_upper_bound'], width=16, precision=1)} "
+    #         f"{fmt(results[seed]['best_lower_bound'], width=16, precision=1)} "
+    #         f"{fmt(results[seed]['best_upper_bound'], width=16, precision=1)} "
+    #         f"{fmt(results[seed]['best_gap'], width=12, precision=1)} "
+    #         f"{results[seed]['runtime_sec']:12.2f}"
+    #     )
+    #     print("-" * table_width)
     print("=" * table_width)
     return results
 
@@ -1046,24 +1867,25 @@ def run_psmd_seed_grid(
 def run_sgalp_grid(
     feature_counts,
     sgalp_class=None,
-    seeds=(111,),
-    num_constraints=200,
-    num_state_relevance_samples=200,
-    num_guiding_states=200,
-    bandwidth_choices=(1e-4, 1e-5),
-    guiding_violation=0.0,
+    seeds=None,
+    num_constraints=None,
+    num_state_relevance_samples=None,
+    num_guiding_states=None,
+    bandwidth_choices=None,
+    guiding_violation=None,
     compute_upper_bound=True,
-    lower_bound_num_mc_init_states=32,
-    lower_bound_chain_length=600,
-    lower_bound_burn_in=300,
-    lower_bound_noise_batch_size=1000,
-    lower_bound_sampler="auto",
-    lower_bound_num_walkers=32,
-    upper_bound_num_trajectories=2000,
-    upper_bound_horizon=100,
+    lower_bound_num_mc_init_states=None,
+    lower_bound_chain_length=None,
+    lower_bound_burn_in=None,
+    lower_bound_noise_batch_size=None,
+    lower_bound_sampler=None,
+    lower_bound_num_walkers=None,
+    upper_bound_num_trajectories=None,
+    upper_bound_horizon=None,
     sgalp_config: SGALPConfig | None = None,
     lower_bound_config: LowerBoundConfig | None = None,
     policy_config: PolicyEvaluationConfig | None = None,
+    inventory_config: InventoryMDPConfig | None = None,
 ):
     """
     Fit SGALP once for each (#features, seed) pair and cache the outputs.
@@ -1098,6 +1920,60 @@ def run_sgalp_grid(
     """
 
     sgalp_class = SelfGuidedALP if sgalp_class is None else sgalp_class
+    seeds = CONTINUOUS_MDP_NOTEBOOK_CONFIG.seeds if seeds is None else seeds
+    inventory_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.inventory if inventory_config is None else inventory_config
+    default_sgalp_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.sgalp
+    num_constraints = default_sgalp_config.num_constraints if num_constraints is None else num_constraints
+    num_state_relevance_samples = (
+        default_sgalp_config.num_state_relevance_samples
+        if num_state_relevance_samples is None
+        else num_state_relevance_samples
+    )
+    num_guiding_states = (
+        default_sgalp_config.guiding.num_guiding_states
+        if num_guiding_states is None
+        else num_guiding_states
+    )
+    bandwidth_choices = (
+        default_sgalp_config.random_features.bandwidth_choices
+        if bandwidth_choices is None
+        else bandwidth_choices
+    )
+    guiding_violation = (
+        default_sgalp_config.guiding.allowed_violation
+        if guiding_violation is None
+        else guiding_violation
+    )
+    default_policy_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.policy_evaluation
+    default_lower_bound_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.lower_bound
+    lower_bound_num_mc_init_states = (
+        default_lower_bound_config.num_mc_init_states
+        if lower_bound_num_mc_init_states is None
+        else lower_bound_num_mc_init_states
+    )
+    lower_bound_chain_length = (
+        default_lower_bound_config.chain_length
+        if lower_bound_chain_length is None
+        else lower_bound_chain_length
+    )
+    lower_bound_burn_in = default_lower_bound_config.burn_in if lower_bound_burn_in is None else lower_bound_burn_in
+    lower_bound_noise_batch_size = (
+        default_lower_bound_config.noise_batch_size
+        if lower_bound_noise_batch_size is None
+        else lower_bound_noise_batch_size
+    )
+    lower_bound_sampler = default_lower_bound_config.sampler if lower_bound_sampler is None else lower_bound_sampler
+    lower_bound_num_walkers = (
+        default_lower_bound_config.num_walkers
+        if lower_bound_num_walkers is None
+        else lower_bound_num_walkers
+    )
+    upper_bound_num_trajectories = (
+        default_policy_config.num_trajectories
+        if upper_bound_num_trajectories is None
+        else upper_bound_num_trajectories
+    )
+    upper_bound_horizon = default_policy_config.horizon if upper_bound_horizon is None else upper_bound_horizon
     results = {}
 
     base_sgalp_config = _make_sgalp_config(
@@ -1107,38 +1983,38 @@ def run_sgalp_grid(
         num_constraints=num_constraints,
         num_state_relevance_samples=num_state_relevance_samples,
         num_guiding_states=num_guiding_states,
-        basis_seed=111,
+        basis_seed=default_sgalp_config.random_features.random_seed,
         bandwidth_choices=bandwidth_choices,
         guiding_violation=guiding_violation,
-        guiding_relax_fraction=0.02,
-        guiding_abs_floor=1e-6,
-        guiding_retry_scales=(1.0, 2.0, 5.0, 10.0),
-        highs_method="highs-ds",
-        primal_feasibility_tolerance=1e-7,
-        dual_feasibility_tolerance=1e-7,
+        guiding_relax_fraction=default_sgalp_config.guiding.relax_fraction,
+        guiding_abs_floor=default_sgalp_config.guiding.absolute_floor,
+        guiding_retry_scales=default_sgalp_config.guiding.retry_scales,
+        highs_method=default_sgalp_config.solver.method,
+        primal_feasibility_tolerance=default_sgalp_config.solver.primal_feasibility_tolerance,
+        dual_feasibility_tolerance=default_sgalp_config.solver.dual_feasibility_tolerance,
     )
     base_lower_bound_config = _make_lower_bound_config(
         config=lower_bound_config,
         num_mc_init_states=lower_bound_num_mc_init_states,
         chain_length=lower_bound_chain_length,
         burn_in=lower_bound_burn_in,
-        proposal_state_std=0.8,
-        proposal_action_std=0.8,
-        random_seed=333,
+        proposal_state_std=default_lower_bound_config.proposal_state_std,
+        proposal_action_std=default_lower_bound_config.proposal_action_std,
+        random_seed=default_lower_bound_config.random_seed,
         noise_batch_size=lower_bound_noise_batch_size,
         sampler=lower_bound_sampler,
         num_walkers=lower_bound_num_walkers,
-        initial_state=5.0,
+        initial_state=default_lower_bound_config.initial_state,
     )
     base_policy_config = _make_policy_config(
         config=policy_config,
-        state_grid_size=801,
-        policy_noise_batch_size=1024,
-        policy_noise_seed=123456,
+        state_grid_size=default_policy_config.state_grid_size,
+        policy_noise_batch_size=default_policy_config.policy_noise_batch_size,
+        policy_noise_seed=default_policy_config.policy_noise_seed,
         num_trajectories=upper_bound_num_trajectories,
         horizon=upper_bound_horizon,
-        simulation_seed=2026,
-        initial_state=5.0,
+        simulation_seed=default_policy_config.simulation_seed,
+        initial_state=default_policy_config.initial_state,
     )
 
     def fmt(value, width=16, precision=1):
@@ -1152,16 +2028,21 @@ def run_sgalp_grid(
         """
         return _format_table_value(value, width=width, precision=precision)
 
-    table_width = 104
+    table_width = 138
 
     print("=" * table_width)
     print(
         f"{'seed':>8} {'# features':>12} "
-        f"{'SGALP obj':>16} {'CVL lower bound':>18} {'policy cost':>16} {'opt gap %':>12} {'time (sec)':>12}"
+        f"{'SGALP obj':>16} {'CVL lb':>16} {'policy cost':>16} "
+        f"{'best lb':>16} {'best ub':>16} {'opt gap %':>12} {'time (sec)':>12}"
     )
     print("-" * table_width)
 
     for seed in seeds:
+        best_lower_bound = None
+        best_upper_bound = None
+        best_gap = None
+
         for m in feature_counts:
             if m not in results:
                 results[m] = {}
@@ -1181,12 +2062,18 @@ def run_sgalp_grid(
                 """
                 elapsed_time = time.time() - start_time
                 policy_cost_str = fmt(upper_bound, width=16, precision=1) if upper_bound is not None else f"{'...':>16}"
-                gap_str = fmt(gap, width=12, precision=1) if gap is not None else f"{'...':>12}"
+                best_lb_str = (
+                    fmt(best_lower_bound, width=16, precision=1) if best_lower_bound is not None else f"{'...':>16}"
+                )
+                best_ub_str = (
+                    fmt(best_upper_bound, width=16, precision=1) if best_upper_bound is not None else f"{'...':>16}"
+                )
+                gap_str = fmt(best_gap, width=12, precision=1) if best_gap is not None else f"{'...':>12}"
                 print(
                     f"{seed:8d} {m:12d} "
                     f"{fmt(sgalp_objective, width=16, precision=1)} "
-                    f"{fmt(cvl_lower_bound, width=18, precision=1)} "
-                    f"{policy_cost_str} {gap_str} {elapsed_time:12.2f}",
+                    f"{fmt(cvl_lower_bound, width=16, precision=1)} "
+                    f"{policy_cost_str} {best_lb_str} {best_ub_str} {gap_str} {elapsed_time:12.2f}",
                     end=end,
                     flush=True,
                 )
@@ -1198,7 +2085,7 @@ def run_sgalp_grid(
                 random_features=base_sgalp_config.random_features.with_updates(random_seed=seed),
             )
             model = sgalp_class(
-                mdp=make_inventory_mdp(),
+                mdp=make_inventory_mdp(inventory_config),
                 config=model_config,
             )
             solution = model.fit()
@@ -1211,6 +2098,11 @@ def run_sgalp_grid(
                 model,
                 **lb_config.to_kwargs(),
             )
+            best_lower_bound = (
+                cvl_lower_bound
+                if best_lower_bound is None
+                else max(best_lower_bound, cvl_lower_bound)
+            )
             print_progress()
 
             if compute_upper_bound:
@@ -1219,8 +2111,14 @@ def run_sgalp_grid(
                     simulation_seed=seed + 10000,
                 )
                 upper_bound = estimate_upper_bound_fast(model, config=ub_config)
+                best_upper_bound = (
+                    upper_bound
+                    if best_upper_bound is None
+                    else min(best_upper_bound, upper_bound)
+                )
+                best_gap = _compute_optimality_gap(best_lower_bound, best_upper_bound)
                 print_progress()
-                gap = _compute_optimality_gap(cvl_lower_bound, upper_bound)
+                gap = best_gap
 
             elapsed_time = time.time() - start_time
 
@@ -1230,6 +2128,8 @@ def run_sgalp_grid(
                 "sgalp_objective": sgalp_objective,
                 "lower_bound": cvl_lower_bound,
                 "upper_bound": upper_bound,
+                "best_lower_bound": best_lower_bound,
+                "best_upper_bound": best_upper_bound,
                 "gap": gap,
                 "runtime_sec": elapsed_time,
             }
@@ -1243,17 +2143,18 @@ def run_sgalp_grid(
 
 def run_sgalp_stage_trace(
     sgalp_class=None,
-    max_random_features=4,
-    num_constraints=200,
-    num_state_relevance_samples=200,
-    num_guiding_states=200,
-    bandwidth_choices=(1e-4, 1e-5),
-    basis_seed=111,
-    guiding_violation=0.0,
-    guiding_relax_fraction=0.02,
-    guiding_abs_floor=1e-6,
-    guiding_retry_scales=(1.0, 2.0, 5.0, 10.0),
+    max_random_features=None,
+    num_constraints=None,
+    num_state_relevance_samples=None,
+    num_guiding_states=None,
+    bandwidth_choices=None,
+    basis_seed=None,
+    guiding_violation=None,
+    guiding_relax_fraction=None,
+    guiding_abs_floor=None,
+    guiding_retry_scales=None,
     sgalp_config: SGALPConfig | None = None,
+    inventory_config: InventoryMDPConfig | None = None,
 ):
     """
     Run SGALP stage by stage and store stage-specific solver information.
@@ -1274,6 +2175,51 @@ def run_sgalp_stage_trace(
     """
 
     sgalp_class = SelfGuidedALP if sgalp_class is None else sgalp_class
+    inventory_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.inventory if inventory_config is None else inventory_config
+    default_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.sgalp
+    if max_random_features is None:
+        max_random_features = (
+            default_config.max_random_features
+            if default_config.max_random_features > 0
+            else max(CONTINUOUS_MDP_NOTEBOOK_CONFIG.falp_feature_counts)
+        )
+    num_constraints = default_config.num_constraints if num_constraints is None else num_constraints
+    num_state_relevance_samples = (
+        default_config.num_state_relevance_samples
+        if num_state_relevance_samples is None
+        else num_state_relevance_samples
+    )
+    num_guiding_states = (
+        default_config.guiding.num_guiding_states
+        if num_guiding_states is None
+        else num_guiding_states
+    )
+    bandwidth_choices = (
+        default_config.random_features.bandwidth_choices
+        if bandwidth_choices is None
+        else bandwidth_choices
+    )
+    basis_seed = default_config.random_features.random_seed if basis_seed is None else basis_seed
+    guiding_violation = (
+        default_config.guiding.allowed_violation
+        if guiding_violation is None
+        else guiding_violation
+    )
+    guiding_relax_fraction = (
+        default_config.guiding.relax_fraction
+        if guiding_relax_fraction is None
+        else guiding_relax_fraction
+    )
+    guiding_abs_floor = (
+        default_config.guiding.absolute_floor
+        if guiding_abs_floor is None
+        else guiding_abs_floor
+    )
+    guiding_retry_scales = (
+        default_config.guiding.retry_scales
+        if guiding_retry_scales is None
+        else guiding_retry_scales
+    )
     config = _make_sgalp_config(
         config=sgalp_config,
         max_random_features=max_random_features,
@@ -1293,7 +2239,7 @@ def run_sgalp_stage_trace(
     )
 
     model = sgalp_class(
-        mdp=make_inventory_mdp(),
+        mdp=make_inventory_mdp(inventory_config),
         config=config,
     )
 
@@ -1374,18 +2320,19 @@ def run_sgalp_stage_trace(
 
 def run_falp_and_sgalp_comparison(
     sgalp_class=None,
-    max_random_features=4,
-    num_constraints=2000,
-    num_state_relevance_samples=2000,
-    num_guiding_states=2000,
-    bandwidth_choices=(1e-1, 1e-2),
-    basis_seed=222,
-    guiding_violation=0.0,
-    guiding_relax_fraction=0.0,
-    guiding_abs_floor=1e-7,
-    guiding_retry_scales=(1.0,),
+    max_random_features=None,
+    num_constraints=None,
+    num_state_relevance_samples=None,
+    num_guiding_states=None,
+    bandwidth_choices=None,
+    basis_seed=None,
+    guiding_violation=None,
+    guiding_relax_fraction=None,
+    guiding_abs_floor=None,
+    guiding_retry_scales=None,
     falp_config: FALPConfig | None = None,
     sgalp_config: SGALPConfig | None = None,
+    inventory_config: InventoryMDPConfig | None = None,
 ):
     """
     Run SGALP stage by stage and fit matching FALP models for the same m values.
@@ -1406,6 +2353,37 @@ def run_falp_and_sgalp_comparison(
         sgalp_config: Optional grouped SGALP settings.
     """
 
+    inventory_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.inventory if inventory_config is None else inventory_config
+    default_falp_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.falp
+    default_sgalp_config = CONTINUOUS_MDP_NOTEBOOK_CONFIG.sgalp
+
+    max_random_features = (
+        max(CONTINUOUS_MDP_NOTEBOOK_CONFIG.falp_feature_counts)
+        if max_random_features is None
+        else max_random_features
+    )
+    num_constraints = default_falp_config.num_constraints if num_constraints is None else num_constraints
+    num_state_relevance_samples = (
+        default_falp_config.num_state_relevance_samples
+        if num_state_relevance_samples is None
+        else num_state_relevance_samples
+    )
+    num_guiding_states = default_sgalp_config.guiding.num_guiding_states if num_guiding_states is None else num_guiding_states
+    bandwidth_choices = default_falp_config.random_features.bandwidth_choices if bandwidth_choices is None else bandwidth_choices
+    basis_seed = default_falp_config.random_features.random_seed if basis_seed is None else basis_seed
+    guiding_violation = default_sgalp_config.guiding.allowed_violation if guiding_violation is None else guiding_violation
+    guiding_relax_fraction = (
+        default_sgalp_config.guiding.relax_fraction
+        if guiding_relax_fraction is None
+        else guiding_relax_fraction
+    )
+    guiding_abs_floor = default_sgalp_config.guiding.absolute_floor if guiding_abs_floor is None else guiding_abs_floor
+    guiding_retry_scales = (
+        default_sgalp_config.guiding.retry_scales
+        if guiding_retry_scales is None
+        else guiding_retry_scales
+    )
+
     sg_model, sg_trace = run_sgalp_stage_trace(
         sgalp_class=sgalp_class,
         max_random_features=max_random_features,
@@ -1419,6 +2397,7 @@ def run_falp_and_sgalp_comparison(
         guiding_abs_floor=guiding_abs_floor,
         guiding_retry_scales=guiding_retry_scales,
         sgalp_config=sgalp_config,
+        inventory_config=inventory_config,
     )
 
     base_falp_config = _make_falp_config(
@@ -1436,7 +2415,7 @@ def run_falp_and_sgalp_comparison(
 
     for m in m_values:
         falp_m = FALP(
-            mdp=make_inventory_mdp(),
+            mdp=make_inventory_mdp(inventory_config),
             config=base_falp_config.with_updates(num_random_features=m),
         )
         falp_m.fit()
@@ -1453,7 +2432,8 @@ def run_falp_and_sgalp_comparison(
 def plot_falp_vs_sgalp_vfas_and_relevance(
     comparison_results,
     grid_size=300,
-    figsize=(9.5, 6.2),
+    figsize=(12, 7),
+    fontsize=12,
 ):
     """
     Plot:
@@ -1465,6 +2445,7 @@ def plot_falp_vs_sgalp_vfas_and_relevance(
             `run_falp_and_sgalp_comparison`.
         grid_size: Number of states used in the plotting grid.
         figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
     """
 
     sg_model = comparison_results["sg_model"]
@@ -1494,19 +2475,19 @@ def plot_falp_vs_sgalp_vfas_and_relevance(
         ax.plot(grid, falp_values, linewidth=2.0, label="FALP")
         ax.plot(grid, sgalp_values, linewidth=2.0, linestyle="--", label="Self-guided ALP")
         ax.axvline(0.0, color="gray", linestyle="--", linewidth=1)
-        ax.set_title(f"m = {m}", fontsize=15)
+        ax.set_title(f"N = {m}", fontsize=fontsize)
         ax.grid(alpha=0.3)
-        ax.legend(fontsize=12, frameon=False, loc="best")
+        ax.legend(fontsize=fontsize, frameon=False, loc="best")
 
     for ax in axes[:n_plots]:
-        ax.set_xlabel("State s", fontsize=14)
-        ax.set_ylabel(r"$\hat V(s)$", fontsize=14)
-        ax.tick_params(labelsize=12)
+        ax.set_xlabel("State s", fontsize=fontsize)
+        ax.set_ylabel(r"$\hat V(s)$", fontsize=fontsize)
+        ax.tick_params(labelsize=fontsize)
 
     for ax in axes[n_plots:]:
         ax.axis("off")
 
-    fig.suptitle("FALP vs Self-Guided ALP Value Function Approximations", y=0.98, fontsize=18)
+    fig.suptitle("FALP vs Self-Guided ALP Value Function Approximations", y=0.98, fontsize=fontsize)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.show()
 
@@ -1518,7 +2499,7 @@ def plot_falp_vs_sgalp_vfas_and_relevance(
         m = item["m"]
 
         if item["updated_relevance"] is None:
-            ax.set_title(f"m = {m} (no guiding constraints)", fontsize=15)
+            ax.set_title(f"N = {m} (no guiding constraints)", fontsize=fontsize)
             ax.grid(alpha=0.3)
 
             lower_bound = sg_model.mdp.lower_state_bound
@@ -1534,7 +2515,7 @@ def plot_falp_vs_sgalp_vfas_and_relevance(
                 alpha=0.6,
                 label="initial uniform",
             )
-            ax.legend(fontsize=12, frameon=False, loc="best")
+            ax.legend(fontsize=fontsize, frameon=False, loc="best")
             continue
 
         ax.plot(
@@ -1552,19 +2533,19 @@ def plot_falp_vs_sgalp_vfas_and_relevance(
             alpha=0.8,
             label="updated relevance",
         )
-        ax.set_title(f"m = {m}", fontsize=15)
+        ax.set_title(f"N = {m}", fontsize=fontsize)
         ax.grid(alpha=0.3)
-        ax.legend(fontsize=12, frameon=False, loc="best")
+        ax.legend(fontsize=fontsize, frameon=False, loc="best")
 
     for ax in axes[:n_plots]:
-        ax.set_xlabel("State s", fontsize=14)
-        ax.set_ylabel("State-relevance density", fontsize=14)
-        ax.tick_params(labelsize=12)
+        ax.set_xlabel("State s", fontsize=fontsize)
+        ax.set_ylabel("State-relevance density", fontsize=fontsize)
+        ax.tick_params(labelsize=fontsize)
 
     for ax in axes[n_plots:]:
         ax.axis("off")
 
-    fig.suptitle("Initial and Updated State-Relevance Distributions", y=0.98, fontsize=18)
+    fig.suptitle("Initial and Updated State-Relevance Distributions", y=0.98, fontsize=fontsize)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.show()
 
@@ -1623,7 +2604,8 @@ def summarize_falp_vs_sgalp_policy_costs(
 
 def plot_falp_vs_sgalp_policy_costs(
     policy_cost_summary,
-    figsize=(7.5, 4.6),
+    figsize=(12, 3.5),
+    fontsize=12,
 ):
     """
     Plot matched FALP and SGALP policy costs across stage sizes.
@@ -1632,6 +2614,7 @@ def plot_falp_vs_sgalp_policy_costs(
         policy_cost_summary: Output dictionary from
             `summarize_falp_vs_sgalp_policy_costs`.
         figsize: Figure size passed to Matplotlib.
+        fontsize: Font size used for plot text.
     """
 
     m_values = policy_cost_summary["m_values"]
@@ -1659,10 +2642,11 @@ def plot_falp_vs_sgalp_policy_costs(
         label="SGALP policy cost",
     )
     ax.set_xticks(m_values)
-    ax.set_xlabel("Number of random features (m)")
-    ax.set_ylabel("Estimated policy cost")
-    ax.set_title("FALP vs SGALP Policy Costs")
-    ax.legend(frameon=False, loc="best")
+    ax.set_xlabel("Number of random features (m)", fontsize=fontsize)
+    ax.set_ylabel("Estimated policy cost", fontsize=fontsize)
+    ax.set_title("FALP vs SGALP Policy Costs", fontsize=fontsize)
+    ax.legend(frameon=False, loc="best", fontsize=fontsize)
+    ax.tick_params(labelsize=fontsize)
     ax.grid(alpha=0.3)
     plt.tight_layout()
     plt.show()
@@ -1858,4 +2842,4 @@ def _make_psmd_config(config):
     """
     if config is not None:
         return config
-    return PSMDConfig()
+    return CONTINUOUS_MDP_NOTEBOOK_CONFIG.psmd
