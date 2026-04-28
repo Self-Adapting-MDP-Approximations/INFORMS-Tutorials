@@ -525,8 +525,8 @@ def plot_inventory_gibbs_densities(
         ax.set_xlim(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound)
         ax.set_ylim(0.0, plot_data.mdp.max_order)
         
-        ax.set_xticks(np.arange(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound,4))
-        ax.set_yticks(np.arange(0, plot_data.mdp.max_order,2))
+        ax.set_xticks(np.arange(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound+1,4))
+        ax.set_yticks(np.arange(0, plot_data.mdp.max_order+1,2))
 
         ax.tick_params(labelsize=fontsize)
 
@@ -1228,7 +1228,7 @@ def plot_value_function_curves(
     comparison_seeds=None,
     comparison_algorithm_name=None,
     grid_size=300,
-    colormap="viridis",
+    colormap=None,
     comparison_colormap=None,
     objective_color="#2a6f97",
     figsize=(12, 3.5),
@@ -1238,53 +1238,63 @@ def plot_value_function_curves(
 ):
     """
     Plot representative value-function curves and mean objective values.
-
-    When `comparison_results_dict` is provided, the figure instead compares
-    value-function curves for two methods side by side. This mode is used for
-    the FALP-versus-SGALP VFA comparison after both experiment grids have been
-    computed.
-
-    Args:
-        results_dict: Nested dictionary returned by `run_falp_grid` or
-            `run_sgalp_grid`.
-        feature_counts: Feature counts to include in the figure.
-        seeds: Random seeds included in `results_dict`.
-        algorithm_name: Label used in plot titles, such as `FALP` or `SGALP`.
-        comparison_results_dict: Optional second result dictionary to compare
-            against `results_dict`.
-        comparison_feature_counts: Feature counts for the comparison results.
-            Defaults to `feature_counts`.
-        comparison_seeds: Seeds for the comparison results. Defaults to
-            `seeds`.
-        comparison_algorithm_name: Label for the comparison method.
-        grid_size: Number of states used in the plotting grid.
-        colormap: Matplotlib colormap name used for the value curves.
-        comparison_colormap: Colormap for the comparison value curves.
-        objective_color: Line color used for the objective summary plot.
-        figsize: Figure size passed to Matplotlib.
-        fontsize: Font size used for plot text.
-        plot_seed: Seed used for the representative value-function curves.
-        comparison_plot_seed: Seed used for the comparison curves.
     """
+
     if plot_seed is None:
         plot_seed = seeds[0]
 
-    def _plot_vfa_panel(ax, result_set, counts, seed, label, cmap_name):
+    color_cycle = [
+        "#1f77b4",  # blue
+        "#d62728",  # red
+        "#2ca02c",  # green
+        "#9467bd",  # purple
+        "#ff7f0e",  # orange
+        "#17becf",  # cyan
+        "#8c564b",  # brown
+        "#e377c2",  # pink
+        "#7f7f7f",  # gray
+        "#bcbd22",  # olive
+    ]
+    linestyle_cycle = ["-", "--", "-.", ":", (0, (5, 2)), (0, (3, 1, 1, 1))]
+    marker_cycle = ["o", "s", "^", "D", "v", "P", "X", "*", "h", "<"]
+
+    def _style(i):
+        return {
+            "color": color_cycle[i % len(color_cycle)],
+            "linestyle": linestyle_cycle[i % len(linestyle_cycle)],
+            "marker": marker_cycle[i % len(marker_cycle)],
+            "markevery": max(1, grid_size // 12),
+            "markersize": 5.5,
+            "linewidth": 2.2,
+        }
+
+    def _plot_vfa_panel(ax, result_set, counts, seed, label, cmap_name=None):
         representative_model = result_set[counts[0]][seed]["model"]
         grid = np.linspace(
             representative_model.mdp.lower_state_bound,
             representative_model.mdp.upper_state_bound,
             grid_size,
         )
-        colors = plt.get_cmap(cmap_name)(np.linspace(0.15, 0.9, len(counts)))
 
-        for color, feature_count in zip(colors, counts):
+        if cmap_name is not None:
+            colors = plt.get_cmap(cmap_name)(np.linspace(0.1, 0.9, len(counts)))
+        else:
+            colors = [color_cycle[i % len(color_cycle)] for i in range(len(counts))]
+
+        for i, feature_count in enumerate(counts):
             model = result_set[feature_count][seed]["model"]
             values = evaluate_vfa_on_grid(model, grid)
             shift = max(0.0, 1.0 - np.min(values))
             log_values = np.log(values + shift)
-            curve_label = f"N = {feature_count}" + (f" (shift={shift:.2f})" if shift > 0 else "")
-            ax.plot(grid, log_values, linewidth=2.3, color=color, label=curve_label)
+
+            curve_label = f"N = {feature_count}" + (
+                f" (shift={shift:.2f})" if shift > 0 else ""
+            )
+
+            style = _style(i)
+            style["color"] = colors[i]
+
+            ax.plot(grid, log_values, label=curve_label, **style)
 
         ax.axvline(0.0, color="gray", linestyle="--", linewidth=1)
         ax.set(
@@ -1296,19 +1306,28 @@ def plot_value_function_curves(
         return grid
 
     if comparison_results_dict is not None:
-        comparison_feature_counts = feature_counts if comparison_feature_counts is None else comparison_feature_counts
+        comparison_feature_counts = (
+            feature_counts if comparison_feature_counts is None else comparison_feature_counts
+        )
         comparison_seeds = seeds if comparison_seeds is None else comparison_seeds
         comparison_algorithm_name = (
-            "Comparison"
-            if comparison_algorithm_name is None
-            else comparison_algorithm_name
+            "Comparison" if comparison_algorithm_name is None else comparison_algorithm_name
         )
-        comparison_colormap = colormap if comparison_colormap is None else comparison_colormap
+
         if comparison_plot_seed is None:
             comparison_plot_seed = comparison_seeds[0]
 
         fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
-        _plot_vfa_panel(axes[0], results_dict, feature_counts, plot_seed, algorithm_name, colormap)
+
+        _plot_vfa_panel(
+            axes[0],
+            results_dict,
+            feature_counts,
+            plot_seed,
+            algorithm_name,
+            colormap,
+        )
+
         _plot_vfa_panel(
             axes[1],
             comparison_results_dict,
@@ -1317,6 +1336,7 @@ def plot_value_function_curves(
             comparison_algorithm_name,
             comparison_colormap,
         )
+
         plt.tight_layout()
         plt.show()
         return
@@ -1327,40 +1347,57 @@ def plot_value_function_curves(
         representative_model.mdp.upper_state_bound,
         grid_size,
     )
+
     mean_objective_values = []
-    colors = plt.get_cmap(colormap)(np.linspace(0.15, 0.9, len(feature_counts)))
+
+    if colormap is not None:
+        colors = plt.get_cmap(colormap)(np.linspace(0.1, 0.9, len(feature_counts)))
+    else:
+        colors = [color_cycle[i % len(color_cycle)] for i in range(len(feature_counts))]
 
     fig, axes = plt.subplots(1, 2, figsize=figsize)
 
-    for color, feature_count in zip(colors, feature_counts):
+    for i, feature_count in enumerate(feature_counts):
         model = results_dict[feature_count][plot_seed]["model"]
+
         mean_objective_values.append(
-            np.mean([results_dict[feature_count][seed]["solution"]["objective_value"] for seed in seeds])
+            np.mean(
+                [
+                    results_dict[feature_count][seed]["solution"]["objective_value"]
+                    for seed in seeds
+                ]
+            )
         )
 
         values = evaluate_vfa_on_grid(model, grid)
         shift = max(0.0, 1.0 - np.min(values))
         log_values = np.log(values + shift)
 
-        label = f"N = {feature_count}" + (f" (shift={shift:.2f})" if shift > 0 else "")
-        axes[0].plot(grid, log_values, linewidth=2.3, color=color, label=label)
+        label = f"N = {feature_count}" + (
+            f" (shift={shift:.2f})" if shift > 0 else ""
+        )
+
+        style = _style(i)
+        style["color"] = colors[i]
+
+        axes[0].plot(grid, log_values, label=label, **style)
 
     axes[0].axvline(0.0, color="gray", linestyle="--", linewidth=1)
     axes[0].set(
         xlabel="State s",
         ylabel=r"Log value function approximation",
-        # title=f"{algorithm_name} Value Functions on a Log Scale (seed = {plot_seed})",
     )
-    axes[0].legend(ncol=2)
+    axes[0].legend(ncol=2, fontsize=fontsize)
     axes[0].tick_params(labelsize=fontsize)
 
     axes[1].plot(
         feature_counts,
         mean_objective_values,
-        "o--",
+        color=objective_color,
+        linestyle="--",
+        marker="o",
         linewidth=2.2,
         markersize=7,
-        color=objective_color,
     )
     axes[1].set(
         xlabel="Number of Random Features (m)",
@@ -1430,7 +1467,7 @@ def plot_bound_boxplots(
     axes[0].set(
         xticks=positions,
         xticklabels=[str(m) for m in feature_counts],
-        xlabel="Number of Random Features (m)",
+        xlabel="Number of Random Features",
         ylabel="Bound Value",
         title=f"{algorithm_name} Lower and Upper Bounds Across Random Seeds",
     )
@@ -1744,8 +1781,8 @@ def plot_psmd_sampling_snapshots(
         ax.set_title(f"Iteration {iteration:,}", fontsize=fontsize)
         ax.set_xlim(solver.mdp.lower_state_bound - offset, solver.mdp.upper_state_bound + offset)
         ax.set_ylim(-offset + 0.0, offset + solver.mdp.max_order)
-        ax.set_xticks(np.arange(solver.mdp.lower_state_bound, solver.mdp.upper_state_bound,4))
-        ax.set_yticks(np.arange(0, solver.mdp.max_order,2))
+        ax.set_xticks(np.arange(solver.mdp.lower_state_bound, solver.mdp.upper_state_bound+1,4))
+        ax.set_yticks(np.arange(0, solver.mdp.max_order+1,2))
         ax.set_xlabel("State", fontsize=fontsize)
         ax.tick_params(labelsize=fontsize)
         ax.grid(True, alpha=0.3)
