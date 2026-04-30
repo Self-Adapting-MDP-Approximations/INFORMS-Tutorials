@@ -18,7 +18,7 @@ dependencies:
   - bzip2=1.0.8=h80987f9_6
   - ca-certificates=2026.3.19=hca03da5_0
   - cairo=1.18.4=h191e429_0
-  - certifi=2026.01.04=py312hca03da5_0
+  - certifi=2026.4.22=py312hca03da5_0
   - cffi=2.0.0=py312h73c2a22_1
   - charset-normalizer=3.4.4=py312hca03da5_0
   - comm=0.2.3=py312hca03da5_0
@@ -106,8 +106,9 @@ dependencies:
   - notebook-shim=0.2.4=py312hca03da5_1
   - numpy=2.4.4=py312h4bb6f22_0
   - numpy-base=2.4.4=py312h23175f9_0
-  - openssl=3.5.5=ha0b305a_0
+  - openssl=3.5.6=ha0b305a_0
   - packaging=26.0=py312hca03da5_0
+  - pandas=3.0.2=py312h3f644e9_0
   - pandocfilters=1.5.1=py312hca03da5_0
   - parso=0.8.5=py312hca03da5_0
   - pcre2=10.46=h1dacb4a_0
@@ -139,6 +140,7 @@ dependencies:
   - rfc3339-validator=0.1.4=py312hca03da5_0
   - rfc3986-validator=0.1.1=py312hca03da5_0
   - rpds-py=0.28.0=py312h931abed_0
+  - seaborn=0.13.2=py312hca03da5_3
   - send2trash=1.8.3=py312hca03da5_0
   - setuptools=82.0.1=py312hca03da5_0
   - six=1.17.0=py312hca03da5_0
