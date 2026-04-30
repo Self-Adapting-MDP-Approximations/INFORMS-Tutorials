@@ -53,6 +53,34 @@ The repository is intended as a public-facing scholarly resource rather than a c
 - `weakly-coupled-mdp/`: code and notebooks for weakly coupled MDP examples.
 - `weakly-coupled-mdp/notebooks/`: tutorial notebooks for the weakly coupled MDP material.
 
+## Python Dependencies
+
+Each main tutorial folder includes a `package_dependencies.yml` file that can be used to create a Conda environment with the packages needed for that part of the repository.
+
+For the continuous state-action MDP tutorials:
+
+```bash
+conda env create -f continuous-mdp/package_dependencies.yml
+conda activate informs_tutorial_continuous_mdp
+python -m ipykernel install --user --name informs_tutorial_continuous_mdp --display-name "INFORMS Continuous MDP"
+```
+
+For the weakly coupled MDP tutorials:
+
+```bash
+conda env create -f weakly-coupled-mdp/package_dependencies.yml
+conda activate informs_tutorial_weakly_coupled_mdp
+python -m ipykernel install --user --name informs_tutorial_weakly_coupled_mdp --display-name "INFORMS Weakly Coupled MDP"
+```
+
+After installing the kernel, open JupyterLab from the repository root:
+
+```bash
+jupyter lab
+```
+
+Then select the matching kernel when running notebooks from `continuous-mdp/notebooks/` or `weakly-coupled-mdp/notebooks/`. The weakly coupled examples include `gurobipy`; readers who use those notebooks may also need a working Gurobi license.
+
 ## Authors and Maintainers
 
 This repository is maintained by:

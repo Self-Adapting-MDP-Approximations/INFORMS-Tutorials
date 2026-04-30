@@ -1,0 +1,12 @@
+name: informs_tutorial_continuous_mdp
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - ipykernel
+  - jupyterlab
+  - matplotlib
+  - notebook
+  - numpy
+  - pip
+  - scipy

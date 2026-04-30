@@ -1,4 +1,4 @@
-name: informs_tutorial
+name: informs_tutorial_weakly_coupled_mdp
 channels:
   - defaults
 dependencies:
