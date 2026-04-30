@@ -384,7 +384,7 @@ def gibbs_density_on_grid(function_values, lambda_value, state_grid, action_grid
 def plot_inventory_constraint_threshold_heatmap(
     plot_data,
     figsize=(12, 3.5),
-    fontsize=12,
+    fontsize=13,
     cmap="viridis",
 ):
     """
@@ -524,11 +524,20 @@ def plot_inventory_gibbs_densities(
         ax.set_xlabel(r"Inventory state $s$", fontsize=fontsize)
         ax.set_xlim(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound)
         ax.set_ylim(0.0, plot_data.mdp.max_order)
-        
-        ax.set_xticks(np.arange(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound+1,4))
-        ax.set_yticks(np.arange(0, plot_data.mdp.max_order+1,2))
 
-        ax.tick_params(labelsize=fontsize)
+        x_ticks = np.arange(plot_data.mdp.lower_state_bound, plot_data.mdp.upper_state_bound + 1, 4)
+        y_ticks = np.arange(0.0, plot_data.mdp.max_order + 1, 2)
+        ax.set_xticks(x_ticks)
+        ax.set_yticks(y_ticks)
+        ax.set_xticklabels([f"{tick:g}" for tick in x_ticks], fontsize=fontsize)
+        ax.set_yticklabels([f"{tick:g}" for tick in y_ticks], fontsize=fontsize)
+        ax.tick_params(
+            axis="both",
+            which="both",
+            labelsize=fontsize,
+            labelbottom=True,
+            labelleft=True,
+        )
 
     axes[0].set_ylabel(r"Order quantity $a$", fontsize=fontsize)
     colorbar = fig.colorbar(image, ax=axes, location="right", shrink=0.9)
