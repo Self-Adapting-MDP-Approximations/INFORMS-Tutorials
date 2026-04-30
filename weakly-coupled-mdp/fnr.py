@@ -1,14 +1,4 @@
 """
--------------------------------------------------------------------------------
-
-    Authors:    Andre Cire          | https://www.andre-cire.com/
-                Selva Nadarajah     | https://www.selva-nadarajah.com/
-                Parshan Pakiman     | https://parshanpakiman.github.io/
-                Negar Soheili       | https://www.negar-soheili.com/
-                
-    GitHub:     https://github.com/self-adapting-mdp-approximations
--------------------------------------------------------------------------------
-
 Feasible network relaxation (FNR) utilities for weakly coupled MDPs.
 
 This module provides two main capabilities:
