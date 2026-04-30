@@ -91,10 +91,6 @@ print('Continuous MDP Python modules:')
 for path in sorted(PROJECT_ROOT.glob('*.py')):
     print('  ', path.name)
 
-print('\nShared repository Python modules:')
-for path in sorted(REPOSITORY_ROOT.glob('*.py')):
-    print('  ', path.name)
-
 print('\nself_guided_alp package:')
 for path in sorted((PROJECT_ROOT / 'self_guided_alp').glob('*.py')):
     print('  ', f'self_guided_alp/{path.name}')
@@ -110,13 +106,11 @@ for path in sorted((PROJECT_ROOT / 'notebooks').glob('*.ipynb')):
 ```
 
     Continuous MDP Python modules:
+       basis.py
        config.py
        helper.py
        mdp.py
        policy.py
-
-    Shared repository Python modules:
-       basis.py
 
     self_guided_alp package:
        self_guided_alp/__init__.py
@@ -140,7 +134,7 @@ for path in sorted((PROJECT_ROOT / 'notebooks').glob('*.ipynb')):
 | --- | --- | --- |
 | `config.py` | grouped parameter objects | keeps continuous-MDP model, solver, sampling, and evaluation settings readable |
 | `mdp.py` | discounted continuous inventory model | defines state dynamics, action bounds, costs, demand sampling, and vectorized evaluation routines |
-| `../basis.py` | shared value-function basis families | provides polynomial and random Fourier basis functions for VFA |
+| `basis.py` | value-function basis families | provides polynomial and random Fourier basis functions for VFA |
 | `self_guided_alp/falp.py` | FALP solver | solves a constraint-sampled ALP for a fixed number of random features |
 | `self_guided_alp/sgalp.py` | SGALP solver | solves a sequence of constraint-sampled ALPs with increasing random features and guiding constraints at sampled states |
 | `self_guided_alp/cvl_lower_bound.py` | lower-bound estimation | estimates a lower bound on the optimal policy cost for a fitted VFA using a CVL-based heuristic |
@@ -293,7 +287,7 @@ Two design choices make the rest of the continuous-MDP code simpler:
 <a id="basis"></a>
 ## 5. Basis Functions
 
-`../basis.py` defines the value-function approximation families used for continuous inventory states.
+`basis.py` defines the value-function approximation families used for continuous inventory states.
 
 There are two basis classes:
 
