@@ -753,8 +753,58 @@ def run_polynomial_sampled_alp_example(
     probe_states = example_config.probe_states if probe_states is None else probe_states
     probe_states = np.asarray(probe_states, dtype=float)
 
+    def fmt(value, width=16, precision=1):
+        """
+        Format one table entry for the polynomial sampled-ALP display.
+
+        Args:
+            value: Value to display.
+            width: Display width used in the printed table.
+            precision: Number of decimal digits for numeric values.
+        """
+        return _format_table_value(value, width=width, precision=precision)
+
+    table_width = 121
+    print()
+    print("=" * table_width)
+    print(
+        f"{'seed':>8} {'ALP obj':>16} {'policy cost':>16} "
+        f"{'diff %':>12} {'bind constr':>12} {'min slack':>12} {'time (sec)':>12}"
+    )
+    print("-" * table_width)
+
     def solve_one_seed(seed):
         start_time = time.time()
+        alp_objective = None
+        policy_cost = None
+        gap = None
+        binding_constraints = None
+        min_sampled_slack = None
+
+        def print_progress(end="\r"):
+            """
+            Print the current polynomial sampled-ALP progress row.
+
+            Args:
+                end: Line ending used by the progress print.
+            """
+            elapsed_time = time.time() - start_time
+            binding_text = f"{binding_constraints:12d}" if binding_constraints is not None else f"{'...':>12}"
+            slack_text = f"{min_sampled_slack:12.4f}" if min_sampled_slack is not None else f"{'...':>12}"
+            print(
+                f"{seed:8d} "
+                f"{fmt(alp_objective, width=16, precision=1)} "
+                f"{fmt(policy_cost, width=16, precision=1)} "
+                f"{fmt(gap, width=12, precision=1)} "
+                f"{binding_text} "
+                f"{slack_text} "
+                f"{elapsed_time:12.2f}",
+                end=end,
+                flush=True,
+            )
+
+        print_progress()
+
         mdp = make_inventory_mdp(
             inventory_config.with_updates(
                 num_noise_samples=demand_samples_per_constraint,
@@ -791,6 +841,8 @@ def run_polynomial_sampled_alp_example(
         alp_objective = float(c @ coef)
         sampled_slacks = b - A @ coef
         min_sampled_slack = 0.0 if abs(sampled_slacks.min()) < 1e-8 else float(sampled_slacks.min())
+        binding_constraints = int((sampled_slacks <= 1e-6).sum())
+        print_progress()
 
         alp_model = SimpleNamespace(
             mdp=mdp,
@@ -798,7 +850,7 @@ def run_polynomial_sampled_alp_example(
             coef=coef,
             num_random_features=len(polynomial_exponents) - 1,
         )
-        policy_config = PolicyEvaluationConfig(
+        seed_policy_config = PolicyEvaluationConfig(
             state_grid_size=policy_grid_size,
             policy_noise_batch_size=policy_noise_batch_size,
             policy_noise_seed=seed + 510000,
@@ -807,10 +859,15 @@ def run_polynomial_sampled_alp_example(
             simulation_seed=seed + 10000,
             initial_state=initial_state,
         )
-        policy_cost, policy_se = estimate_upper_bound_fast(alp_model, config=policy_config, return_se=True)
-        state_grid, policy_actions = _build_greedy_policy_lookup(alp_model, config=policy_config)
+        policy_cost, policy_se = estimate_upper_bound_fast(alp_model, config=seed_policy_config, return_se=True)
+        gap = _compute_optimality_gap(alp_objective, policy_cost)
+        print_progress()
+
+        state_grid, policy_actions = _build_greedy_policy_lookup(alp_model, config=seed_policy_config)
         probe_actions = [policy_actions[np.abs(state_grid - state).argmin()] for state in probe_states]
         elapsed_time = time.time() - start_time
+        print_progress(end="\n")
+        print("-" * table_width)
 
         return {
             "seed": seed,
@@ -819,10 +876,10 @@ def run_polynomial_sampled_alp_example(
             "alp_objective": alp_objective,
             "policy_cost": policy_cost,
             "policy_se": policy_se,
-            "gap": _compute_optimality_gap(alp_objective, policy_cost),
+            "gap": gap,
             "runtime_sec": elapsed_time,
             "min_sampled_slack": min_sampled_slack,
-            "binding_constraints": int((sampled_slacks <= 1e-6).sum()),
+            "binding_constraints": binding_constraints,
             "num_relevance_states": len(relevance_states),
             "probe_actions": probe_actions,
         }
@@ -834,30 +891,11 @@ def run_polynomial_sampled_alp_example(
     mean_gap = np.mean([row["gap"] for row in rows])
     mean_runtime = np.mean([row["runtime_sec"] for row in rows])
 
-    table_width = 121
-    print()
-    print("=" * table_width)
-    print(
-        f"{'seed':>8} {'ALP obj':>16} {'policy cost':>16} "
-        f"{'diff %':>12} {'bind constr':>12} {'min slack':>12} {'time (sec)':>12}"
-    )
-    print("-" * table_width)
-    for row in rows:
-        print(
-            f"{row['seed']:8d} "
-            f"{_format_table_value(row['alp_objective'], width=16, precision=1)} "
-            f"{_format_table_value(row['policy_cost'], width=16, precision=1)} "
-            f"{_format_table_value(row['gap'], width=12, precision=1)} "
-            f"{row['binding_constraints']:12d} "
-            f"{row['min_sampled_slack']:12.4f} "
-            f"{row['runtime_sec']:12.2f}"
-        )
-        print("-" * table_width)
     print(
         f"{'AVERAGE':>8} "
-        f"{_format_table_value(mean_alp_objective, width=16, precision=1)} "
-        f"{_format_table_value(mean_policy_cost, width=16, precision=1)} "
-        f"{_format_table_value(mean_gap, width=12, precision=1)} "
+        f"{fmt(mean_alp_objective, width=16, precision=1)} "
+        f"{fmt(mean_policy_cost, width=16, precision=1)} "
+        f"{fmt(mean_gap, width=12, precision=1)} "
         f"{'':>12} "
         f"{'':>12} "
         f"{mean_runtime:12.2f}"
